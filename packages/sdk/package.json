@@ -6,12 +6,12 @@
   "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
     },
     "./conventions": {
-      "types": "./src/conventions.ts",
-      "default": "./src/conventions.ts"
+      "types": "./dist/src/conventions.d.ts",
+      "default": "./dist/src/conventions.js"
     }
   },
   "files": [
