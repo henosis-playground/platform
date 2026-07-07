@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ResourceRecord } from "@henosis/sdk";
+import { namespaceFor, type ResourceRecord } from "@henosis/sdk";
 import {
   readComponentDependencyGraph,
   resolveLockfileComponents,
@@ -94,7 +95,12 @@ export async function executeComponents(opts: {
 
   await writeFile(inputPath, `${JSON.stringify(workerInput)}\n`);
 
-  const workerPath = fileURLToPath(new URL("./execute-worker.js", import.meta.url));
+  const builtWorkerPath = fileURLToPath(
+    new URL("./execute-worker.js", import.meta.url),
+  );
+  const workerPath = existsSync(builtWorkerPath)
+    ? builtWorkerPath
+    : fileURLToPath(new URL("./execute-worker.ts", import.meta.url));
   const rendererPackageRoot = path.resolve(
     fileURLToPath(new URL("..", import.meta.url)),
   );
@@ -159,8 +165,4 @@ function parseWorkerOutput(stdout: string): WorkerOutput {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function namespaceFor(envId: string): string {
-  return `henosis-${envId}`;
 }

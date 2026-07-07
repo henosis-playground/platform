@@ -5,14 +5,17 @@ export * as conventions from "./conventions.js";
 export {
   httpUrl,
   namespaceFor,
+  postgresUrl,
   publicUrl,
   serviceHost,
 } from "./conventions.js";
 export {
   executeBinding,
   executeBuild,
+  materialiseBinding,
   materialiseToken,
 } from "./executor.js";
+export { isBindingValueLike, isComponentLike } from "./types.js";
 export type {
   BindingBuilder,
   BindingShape,
@@ -25,6 +28,7 @@ export type {
   ImageRef,
   PostgresRecord,
   ResourceRecord,
+  Resolved,
   ServiceRecord,
   TokenResolver,
 } from "./types.js";

@@ -1,12 +1,13 @@
 import {
   httpUrl,
   namespaceFor,
+  postgresUrl,
   publicUrl,
   serviceHost,
 } from "./conventions.js";
 import {
   createBindingValue,
-  isBindingValue,
+  isBindingValueLike,
   type BindingBuilder,
   type BindingShape,
   type BindingValue,
@@ -14,8 +15,10 @@ import {
   type Component,
   type DependencyResolver,
   type Env,
+  type EnvId,
   type ImageRef,
   type ResourceRecord,
+  type Resolved,
 } from "./types.js";
 
 const bindingBuilder: BindingBuilder = {
@@ -26,11 +29,9 @@ const bindingBuilder: BindingBuilder = {
 
 export function executeBinding<B extends BindingShape>(
   component: Component<B>,
-  envId: string,
 ): B {
   const binding = component.spec.binding(bindingBuilder);
   fillTokenComponents(binding, component.name);
-  void envId;
   return binding;
 }
 
@@ -40,7 +41,7 @@ export function executeBuild<B extends BindingShape>(
     env: Env;
     image: ImageRef;
     depResolver: DependencyResolver;
-    envId: string;
+    envId: EnvId;
   },
 ): ResourceRecord[] {
   const records: ResourceRecord[] = [];
@@ -56,35 +57,37 @@ export function executeBuild<B extends BindingShape>(
         component: component.name,
         image: serviceOpts.image,
         port: serviceOpts.port,
-        env: materialiseEnv(serviceOpts.env, opts.envId),
+        env: materialiseEnv(serviceOpts.env, opts.envId, component.name),
         namespace,
       });
     },
     postgres: (name, postgresOpts) => {
-      const url = createBindingValue(
-        "host",
-        postgresAddressComponent(component.name, name),
+      const postgresEnvId = postgresAddressEnvId(
+        opts.env,
+        opts.envId,
+        postgresOpts.previews,
       );
+      const url = postgresUrl(component.name, name, postgresEnvId);
 
       records.push({
         kind: "postgres",
         component: component.name,
         name,
         previews: postgresOpts.previews,
-        url: materialiseToken(url, opts.envId),
-        namespace,
+        url,
+        namespace: namespaceFor(postgresEnvId),
       });
 
       return { url };
     },
   };
 
-  const self = executeBinding(component, opts.envId);
+  const self = executeBinding(component);
   component.spec.build(ctx, self);
   return records;
 }
 
-export function materialiseToken(token: BindingValue, envId: string): string {
+export function materialiseToken(token: BindingValue, envId: EnvId): string {
   const component = token.component;
   if (component === undefined) {
     throw new Error(
@@ -102,8 +105,15 @@ export function materialiseToken(token: BindingValue, envId: string): string {
   }
 }
 
+export function materialiseBinding<B extends BindingShape>(
+  binding: B,
+  envId: EnvId,
+): Resolved<B> {
+  return materialiseShape(binding, envId) as Resolved<B>;
+}
+
 function fillTokenComponents(shape: BindingShape, component: string): void {
-  if (isBindingValue(shape)) {
+  if (isBindingValueLike(shape)) {
     shape.component = component;
     return;
   }
@@ -119,19 +129,74 @@ function fillTokenComponents(shape: BindingShape, component: string): void {
 
 function materialiseEnv(
   env: Record<string, string | BindingValue> | undefined,
-  envId: string,
+  envId: EnvId,
+  component: string,
 ): Record<string, string> {
   const materialised: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(env ?? {})) {
-    materialised[key] = isBindingValue(value)
-      ? materialiseToken(value, envId)
-      : value;
+    if (isBindingValueLike(value)) {
+      if (value.component !== component) {
+        throw new Error(
+          `Cannot materialise ${value.component ?? "unowned"} binding token in ${component}'s service environment`,
+        );
+      }
+
+      materialised[key] = materialiseToken(value, envId);
+    } else {
+      materialised[key] = value;
+    }
   }
 
   return materialised;
 }
 
-function postgresAddressComponent(component: string, name: string): string {
-  return `${component}-${name}-postgres`;
+type MaterialisedBindingShape =
+  | string
+  | number
+  | boolean
+  | { [key: string]: MaterialisedBindingShape };
+
+function materialiseShape(
+  shape: BindingShape,
+  envId: EnvId,
+): MaterialisedBindingShape {
+  if (isBindingValueLike(shape)) {
+    return materialiseToken(shape, envId);
+  }
+
+  if (
+    typeof shape === "string" ||
+    typeof shape === "number" ||
+    typeof shape === "boolean"
+  ) {
+    return shape;
+  }
+
+  if (!isRecord(shape)) {
+    throw new Error("Unsupported binding shape");
+  }
+
+  return Object.fromEntries(
+    Object.entries(shape).map(([key, value]) => [
+      key,
+      materialiseShape(value, envId),
+    ]),
+  );
+}
+
+function postgresAddressEnvId(
+  env: Env,
+  envId: EnvId,
+  previews: "clone" | "share-dev",
+): EnvId {
+  if (env.kind === "preview" && previews === "share-dev") {
+    return "dev";
+  }
+
+  return envId;
+}
+
+function isRecord(value: unknown): value is Record<string, BindingShape> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

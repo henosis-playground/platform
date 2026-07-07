@@ -4,11 +4,16 @@ import {
   executeBinding,
   executeBuild,
   httpUrl,
+  isBindingValueLike,
+  isComponentLike,
+  materialiseBinding,
   materialiseToken,
   namespaceFor,
+  postgresUrl,
   publicUrl,
   serviceHost,
   type BindingValue,
+  type Resolved,
 } from "../src/index.js";
 
 describe("conventions", () => {
@@ -22,6 +27,9 @@ describe("conventions", () => {
     );
     expect(publicUrl("service-b", "pr-42")).toBe(
       "https://service-b-pr-42.henosis.example",
+    );
+    expect(postgresUrl("service-b", "main", "pr-42")).toBe(
+      "postgres://henosis:henosis@service-b-main-postgres.henosis-pr-42.svc.cluster.local:5432/main",
     );
   });
 });
@@ -39,7 +47,7 @@ describe("binding tokens", () => {
       build: () => {},
     });
 
-    const binding = executeBinding(component, "preview-1");
+    const binding = executeBinding(component);
 
     expect(binding.api.convention).toBe("httpUrl");
     expect(binding.api.component).toBe("service-a");
@@ -55,7 +63,7 @@ describe("binding tokens", () => {
       build: () => {},
     });
 
-    const binding = executeBinding(component, "preview-1");
+    const binding = executeBinding(component);
 
     expect(materialiseToken(binding.api, "preview-1")).toBe(
       "http://service-a.henosis-preview-1.svc.cluster.local:80",
@@ -63,6 +71,46 @@ describe("binding tokens", () => {
     expect(materialiseToken(binding.host, "preview-1")).toBe(
       "service-a.henosis-preview-1.svc.cluster.local",
     );
+  });
+
+  it("materialises a full binding shape into Resolved<T>", () => {
+    const component = defineComponent("service-a", {
+      binding: (b) => ({
+        api: b.httpUrl(),
+        nested: { host: b.host() },
+        constant: "ready",
+      }),
+      build: () => {},
+    });
+
+    const binding = executeBinding(component);
+    const resolved = materialiseBinding(binding, "dev");
+    const typecheck: Resolved<typeof binding> = resolved;
+    const api: string = resolved.api;
+    void typecheck;
+    void api;
+
+    // @ts-expect-error resolved tokens are strings, not raw BindingValue tokens.
+    const token: BindingValue = resolved.api;
+    void token;
+
+    expect(resolved).toEqual({
+      api: "http://service-a.henosis-dev.svc.cluster.local:80",
+      nested: { host: "service-a.henosis-dev.svc.cluster.local" },
+      constant: "ready",
+    });
+  });
+
+  it("exports cross-realm-safe duck-type guards", () => {
+    expect(
+      isBindingValueLike({ convention: "httpUrl", component: "service-a" }),
+    ).toBe(true);
+    expect(
+      isComponentLike({
+        name: "service-a",
+        spec: { binding: () => ({}), build: () => {} },
+      }),
+    ).toBe(true);
   });
 });
 
@@ -78,12 +126,14 @@ describe("build execution", () => {
       build: (ctx) => {
         const a = ctx.use(dependency);
         const db = ctx.postgres("main", { previews: "clone" });
+        const sharedDb = ctx.postgres("shared", { previews: "share-dev" });
 
         ctx.service({
           image: ctx.image,
           port: 3000,
           env: {
             DATABASE_URL: db.url,
+            SHARED_DATABASE_URL: sharedDb.url,
             SERVICE_A_URL: a.api,
             STATIC_VALUE: "enabled",
           },
@@ -95,7 +145,7 @@ describe("build execution", () => {
       env: { kind: "preview", id: "preview-1" },
       image: { ref: "service-b:preview-1", digest: "sha256:service-b" },
       envId: "preview-1",
-      depResolver: (resolved) => executeBinding(resolved, "preview-1"),
+      depResolver: (resolved) => materialiseBinding(executeBinding(resolved), "dev"),
     });
 
     expect(resources).toEqual([
@@ -104,8 +154,16 @@ describe("build execution", () => {
         component: "service-b",
         name: "main",
         previews: "clone",
-        url: "service-b-main-postgres.henosis-preview-1.svc.cluster.local",
+        url: "postgres://henosis:henosis@service-b-main-postgres.henosis-preview-1.svc.cluster.local:5432/main",
         namespace: "henosis-preview-1",
+      },
+      {
+        kind: "postgres",
+        component: "service-b",
+        name: "shared",
+        previews: "share-dev",
+        url: "postgres://henosis:henosis@service-b-shared-postgres.henosis-dev.svc.cluster.local:5432/shared",
+        namespace: "henosis-dev",
       },
       {
         kind: "service",
@@ -114,9 +172,10 @@ describe("build execution", () => {
         port: 3000,
         env: {
           DATABASE_URL:
-            "service-b-main-postgres.henosis-preview-1.svc.cluster.local",
-          SERVICE_A_URL:
-            "http://service-a.henosis-preview-1.svc.cluster.local:80",
+            "postgres://henosis:henosis@service-b-main-postgres.henosis-preview-1.svc.cluster.local:5432/main",
+          SHARED_DATABASE_URL:
+            "postgres://henosis:henosis@service-b-shared-postgres.henosis-dev.svc.cluster.local:5432/shared",
+          SERVICE_A_URL: "http://service-a.henosis-dev.svc.cluster.local:80",
           STATIC_VALUE: "enabled",
         },
         namespace: "henosis-preview-1",
@@ -136,8 +195,12 @@ describe("component typing", () => {
       binding: (b) => ({ app: b.publicUrl() }),
       build: (ctx) => {
         const binding = ctx.use(producer);
-        const api: BindingValue = binding.api;
+        const api: string = binding.api;
         void api;
+
+        // @ts-expect-error dependency bindings are already resolved.
+        const rawApi: BindingValue = binding.api;
+        void rawApi;
 
         // @ts-expect-error missing is not part of producer's binding contract.
         void binding.missing;

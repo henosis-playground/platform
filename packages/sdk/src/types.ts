@@ -32,6 +32,12 @@ export type BindingShape =
   | number
   | boolean;
 
+export type Resolved<T> = T extends BindingValue
+  ? string
+  : T extends string | number | boolean
+    ? T
+    : { [K in keyof T]: Resolved<T[K]> };
+
 export type BindingBuilder = {
   httpUrl(): BindingValue;
   publicUrl(): BindingValue;
@@ -41,7 +47,7 @@ export type BindingBuilder = {
 export type BuildContext = {
   env: Env;
   image: ImageRef;
-  use<T extends BindingShape>(component: Component<T>): T;
+  use<T extends BindingShape>(component: Component<T>): Resolved<T>;
   service(opts: {
     image: ImageRef;
     port: number;
@@ -50,7 +56,7 @@ export type BuildContext = {
   postgres(
     name: string,
     opts: { previews: "clone" | "share-dev" },
-  ): { url: BindingValue };
+  ): { url: string };
 };
 
 export type ComponentSpec<B extends BindingShape> = {
@@ -93,7 +99,7 @@ export type TokenResolver = (token: BindingValue) => string;
 
 export type DependencyResolver = <T extends BindingShape>(
   component: Component<T>,
-) => T;
+) => Resolved<T>;
 
 export function createBindingValue(
   convention: BindingConvention,
@@ -103,7 +109,17 @@ export function createBindingValue(
 }
 
 export function isBindingValue(value: unknown): value is BindingValue {
-  return value instanceof BindingValueToken;
+  return value instanceof BindingValueToken || isBindingValueLike(value);
+}
+
+export function isBindingValueLike(value: unknown): value is BindingValue {
+  return (
+    isRecord(value) &&
+    (value.convention === "httpUrl" ||
+      value.convention === "publicUrl" ||
+      value.convention === "host") &&
+    (value.component === undefined || typeof value.component === "string")
+  );
 }
 
 export function createComponent<B extends BindingShape>(
@@ -111,4 +127,18 @@ export function createComponent<B extends BindingShape>(
   spec: ComponentSpec<B>,
 ): Component<B> {
   return new ComponentDefinition(name, spec);
+}
+
+export function isComponentLike(value: unknown): value is Component<BindingShape> {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    isRecord(value.spec) &&
+    typeof value.spec.binding === "function" &&
+    typeof value.spec.build === "function"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
