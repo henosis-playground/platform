@@ -1,4 +1,5 @@
 import type { ComponentDependencyGraph, ResolvedComponent } from "./assembler.js";
+import { envName, type Env } from "@henosis/core";
 import type {
   ExecutionComponent,
   ExecutionResult,
@@ -85,7 +86,7 @@ export function renderFailure(message: string, excerpt = message): GateFailure {
 
 export function formatGateText(opts: {
   ok: boolean;
-  envId: string;
+  environment: Env;
   components: readonly ResolvedComponent[];
   execution?: ExecutionResult;
   failures: readonly GateFailure[];
@@ -93,7 +94,7 @@ export function formatGateText(opts: {
 }): string {
   const lines = [
     `Henosis gate: ${opts.ok ? "PASS" : "FAIL"}`,
-    `Environment: ${opts.envId}`,
+    `Environment: ${envName(opts.environment)}`,
     "Components:",
     ...opts.components.map(formatComponentSummary),
   ];

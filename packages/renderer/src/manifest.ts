@@ -1,4 +1,5 @@
 import { parse } from "smol-toml";
+import { envFromName, envName, type Env } from "@henosis/core";
 
 export type PinnedEntry = {
   kind: "pinned";
@@ -15,11 +16,10 @@ export type FollowerEntry = {
 export type ManifestEntry = PinnedEntry | FollowerEntry;
 
 export type EnvironmentManifest = {
-  environment: { id: string };
+  environment: Env;
   components: Record<string, ManifestEntry>;
 };
 
-const stableEnvironmentIds = new Set(["dev", "staging", "prod"]);
 const pinnedKeys = new Set(["repo", "ref", "digest"]);
 
 export function parseManifest(toml: string): EnvironmentManifest {
@@ -61,13 +61,14 @@ export function parseManifest(toml: string): EnvironmentManifest {
     throw new Error("Invalid manifest: components must be a table");
   }
 
+  const manifestEnv = envFromName(environment.id);
   const components: Record<string, ManifestEntry> = {};
   for (const [name, value] of Object.entries(componentsValue)) {
-    components[name] = parseComponentEntry(name, value, environment.id);
+    components[name] = parseComponentEntry(name, value, manifestEnv);
   }
 
   return {
-    environment: { id: environment.id },
+    environment: manifestEnv,
     components,
   };
 }
@@ -79,7 +80,7 @@ export function isPinned(entry: ManifestEntry): entry is PinnedEntry {
 function parseComponentEntry(
   componentName: string,
   value: unknown,
-  envId: string,
+  manifestEnv: Env,
 ): ManifestEntry {
   if (!isRecord(value)) {
     throw new Error(
@@ -108,9 +109,9 @@ function parseComponentEntry(
       );
     }
 
-    if (stableEnvironmentIds.has(envId)) {
+    if (manifestEnv.kind !== "preview") {
       throw new Error(
-        `Invalid component "${componentName}": follower entries are invalid in ${envId}`,
+        `Invalid component "${componentName}": follower entries are invalid in ${envName(manifestEnv)}`,
       );
     }
 

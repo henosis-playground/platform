@@ -3,13 +3,12 @@ declare const schemaSymbol: unique symbol;
 declare const refSymbol: unique symbol;
 declare const schemaTypeBrand: unique symbol;
 declare const refTypeBrand: unique symbol;
-export type EnvId = string;
 export type StableEnvKind = "dev" | "staging" | "prod";
 export type Env = {
     readonly kind: StableEnvKind;
 } | {
     readonly kind: "preview";
-    readonly id: EnvId;
+    readonly id: string;
 };
 export type ImageRef = {
     readonly ref: string;
@@ -104,8 +103,8 @@ export declare const h: {
     string(): StringSchema;
     url(): UrlSchema;
 };
-export declare function envId(env: Env): EnvId;
-export declare function envFromId(id: EnvId): Env;
+export declare function envName(env: Env): string;
+export declare function envFromName(name: string): Env;
 export declare function defineComponent<Shape extends SchemaShape>(spec: ComponentSpec<ObjectSchema<Shape>>): ComponentModule<ObjectSchema<Shape>>;
 export declare function getComponentDefinition<S extends ObjectSchema<SchemaShape>>(component: ComponentModule<S>): ComponentDefinition<S>;
 export declare function isComponentModule(value: unknown): value is ComponentModule<ObjectSchema<SchemaShape>>;

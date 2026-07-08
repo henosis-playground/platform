@@ -1,4 +1,4 @@
-export { defineComponent, envId, h } from "@henosis/core";
+export { defineComponent, envName, h } from "@henosis/core";
 export type {
   ArtifactWriter,
   BuildContext,
@@ -7,7 +7,6 @@ export type {
   ComponentModule,
   ComponentRecord,
   Env,
-  EnvId,
   ImageRef,
   InferSchema,
   JsonValue,

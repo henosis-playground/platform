@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindComponentIdentity, componentDefinitionSymbol, defineComponent, envFromId, envId, evaluateComponent, getComponentDefinition, h, isRef, refOutputPath, refSourceComponent, validateSchema, } from "../src/index.js";
+import { bindComponentIdentity, componentDefinitionSymbol, defineComponent, envFromName, envName, evaluateComponent, getComponentDefinition, h, isRef, refOutputPath, refSourceComponent, validateSchema, } from "../src/index.js";
 describe("defineComponent", () => {
     it("exports only output refs as public properties", () => {
         const component = defineComponent({
@@ -64,11 +64,11 @@ describe("evaluation and validation", () => {
         const component = defineComponent({
             outputs: h.object({ api: h.url() }),
             build: (ctx, env) => ({
-                api: `https://service-a-${envId(env)}-${ctx.image.digest.slice(7)}.henosis.example`,
+                api: `https://service-a-${envName(env)}-${ctx.image.digest.slice(7)}.henosis.example`,
             }),
         });
         const result = evaluateComponent(component, {
-            env: envFromId("pr-test"),
+            env: envFromName("pr-test"),
             image: { ref: "service-a:pr-test", digest: "sha256:abc" },
         });
         expect(result).toEqual({
@@ -88,7 +88,7 @@ describe("evaluation and validation", () => {
             },
         });
         expect(evaluateComponent(component, {
-            env: envFromId("dev"),
+            env: envFromName("dev"),
             image: { ref: "service-a:dev", digest: "sha256:abc" },
         }).outputs).toEqual({
             api: "https://service-a-dev.henosis.example",

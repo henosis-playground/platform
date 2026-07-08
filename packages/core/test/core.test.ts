@@ -3,8 +3,8 @@ import {
   bindComponentIdentity,
   componentDefinitionSymbol,
   defineComponent,
-  envFromId,
-  envId,
+  envFromName,
+  envName,
   evaluateComponent,
   getComponentDefinition,
   h,
@@ -92,12 +92,12 @@ describe("evaluation and validation", () => {
     const component = defineComponent({
       outputs: h.object({ api: h.url() }),
       build: (ctx: BuildContext, env) => ({
-        api: `https://service-a-${envId(env)}-${ctx.image.digest.slice(7)}.henosis.example`,
+        api: `https://service-a-${envName(env)}-${ctx.image.digest.slice(7)}.henosis.example`,
       }),
     });
 
     const result = evaluateComponent(component, {
-      env: envFromId("pr-test"),
+      env: envFromName("pr-test"),
       image: { ref: "service-a:pr-test", digest: "sha256:abc" },
     });
 
@@ -121,7 +121,7 @@ describe("evaluation and validation", () => {
 
     expect(
       evaluateComponent(component, {
-        env: envFromId("dev"),
+        env: envFromName("dev"),
         image: { ref: "service-a:dev", digest: "sha256:abc" },
       }).outputs,
     ).toEqual({

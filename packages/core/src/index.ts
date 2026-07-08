@@ -12,13 +12,11 @@ const refSymbol: unique symbol = Symbol.for("henosis.ref") as never;
 declare const schemaTypeBrand: unique symbol;
 declare const refTypeBrand: unique symbol;
 
-export type EnvId = string;
-
 export type StableEnvKind = "dev" | "staging" | "prod";
 
 export type Env =
   | { readonly kind: StableEnvKind }
-  | { readonly kind: "preview"; readonly id: EnvId };
+  | { readonly kind: "preview"; readonly id: string };
 
 export type ImageRef = {
   readonly ref: string;
@@ -159,16 +157,16 @@ export const h = {
   },
 };
 
-export function envId(env: Env): EnvId {
+export function envName(env: Env): string {
   return env.kind === "preview" ? env.id : env.kind;
 }
 
-export function envFromId(id: EnvId): Env {
-  if (id === "dev" || id === "staging" || id === "prod") {
-    return { kind: id };
+export function envFromName(name: string): Env {
+  if (name === "dev" || name === "staging" || name === "prod") {
+    return { kind: name };
   }
 
-  return { kind: "preview", id };
+  return { kind: "preview", id: name };
 }
 
 export function defineComponent<Shape extends SchemaShape>(

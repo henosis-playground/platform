@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ComponentArtifact, ComponentRecord, JsonValue } from "@henosis/core";
+import { envName, type ComponentArtifact, type ComponentRecord, type Env, type JsonValue } from "@henosis/core";
 import { assembleAndCheck, type LocalOverrides } from "./assembler.js";
 import {
   executeComponents,
@@ -13,7 +13,7 @@ import {
 import { isPinned, parseManifest, type EnvironmentManifest } from "./manifest.js";
 
 export type RenderManifest = {
-  envId: string;
+  environment: string;
   generatedAt: string;
   components: Record<string, RenderManifestComponent>;
 };
@@ -78,9 +78,10 @@ export async function writeRenderOutput(opts: {
     (entry): entry is [string, Extract<ExecutionComponent, { disposition: "pinned" }>] =>
       entry[1].disposition === "pinned",
   );
+  const environmentName = envName(opts.execution.env);
 
   const manifest: RenderManifest = {
-    envId: opts.execution.envId,
+    environment: environmentName,
     generatedAt,
     components: Object.fromEntries(
       pinnedComponents.map(([name, component]) => [
@@ -98,28 +99,28 @@ export async function writeRenderOutput(opts: {
 
   const componentFiles: Record<string, string> = {};
   for (const [name, component] of pinnedComponents) {
-    const filePath = path.join(opts.outputDir, `${opts.execution.envId}-${name}.json`);
+    const filePath = path.join(opts.outputDir, `${environmentName}-${name}.json`);
     await writeFile(
       filePath,
-      `${JSON.stringify(formatComponentRenderData(opts.execution.envId, name, component), null, 2)}\n`,
+      `${JSON.stringify(formatComponentRenderData(opts.execution.env, name, component), null, 2)}\n`,
     );
     componentFiles[name] = filePath;
   }
 
-  const manifestPath = path.join(opts.outputDir, `${opts.execution.envId}-manifest.json`);
+  const manifestPath = path.join(opts.outputDir, `${environmentName}-manifest.json`);
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return { manifestPath, componentFiles, manifest };
 }
 
 export function formatComponentRenderData(
-  envId: string,
+  env: Env,
   componentName: string,
   component: Extract<ExecutionComponent, { disposition: "pinned" }>,
-): RenderManifestComponent & { component: string; envId: string } {
+): RenderManifestComponent & { component: string; environment: string } {
   return {
     component: componentName,
-    envId,
+    environment: envName(env),
     ref: component.ref,
     digest: component.digest,
     outputs: component.outputs,
@@ -223,7 +224,7 @@ async function main(): Promise<void> {
     )
     .join(", ");
   console.log(
-    `Rendered ${manifest.environment.id} (${renderedNames}) to ${outputDir}`,
+    `Rendered ${envName(manifest.environment)} (${renderedNames}) to ${outputDir}`,
   );
   if (renderedPins.length > 0) {
     console.log(`Rendered pins: ${renderedPins}`);

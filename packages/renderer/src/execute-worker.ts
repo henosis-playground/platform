@@ -3,7 +3,6 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   bindComponentIdentity,
-  envFromId,
   evaluateComponent,
   getComponentDefinition,
   isComponentModule,
@@ -15,6 +14,7 @@ import {
   type ComponentArtifact,
   type ComponentModule,
   type ComponentRecord,
+  type Env,
   type JsonValue,
   type ObjectSchema,
   type Ref,
@@ -24,7 +24,7 @@ import {
 
 type WorkerComponentInfo = {
   disposition: "pinned" | "follow";
-  envId: string;
+  env: Env;
   ref: string;
   digest: string;
 };
@@ -38,7 +38,7 @@ type WorkerInput = {
 
 type WorkerSuccessComponent = {
   disposition: "pinned" | "follow";
-  envId: string;
+  env: Env;
   ref: string;
   digest: string;
   outputs: JsonValue;
@@ -149,7 +149,7 @@ async function run(): Promise<WorkerOutput> {
 
     components[name] = {
       disposition: info.disposition,
-      envId: info.envId,
+      env: info.env,
       ref: info.ref,
       digest: info.digest,
       outputs: resolution.value,
@@ -169,7 +169,7 @@ function evaluateOne(
   let result;
   try {
     result = evaluateComponent(module, {
-      env: envFromId(info.envId),
+      env: info.env,
       image: { ref: info.ref, digest: info.digest },
     });
   } catch (error) {
@@ -445,7 +445,7 @@ function parseInput(source: string): WorkerInput {
     if (
       !isRecord(value) ||
       (value.disposition !== "pinned" && value.disposition !== "follow") ||
-      typeof value.envId !== "string" ||
+      !isEnv(value.env) ||
       typeof value.ref !== "string" ||
       typeof value.digest !== "string"
     ) {
@@ -454,7 +454,7 @@ function parseInput(source: string): WorkerInput {
 
     components[name] = {
       disposition: value.disposition,
-      envId: value.envId,
+      env: value.env,
       ref: value.ref,
       digest: value.digest,
     };
@@ -482,6 +482,22 @@ function errorStack(error: unknown): string {
   return error instanceof Error && error.stack !== undefined
     ? error.stack
     : errorMessage(error);
+}
+
+function isEnv(value: unknown): value is Env {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (
+    value.kind === "dev" ||
+    value.kind === "staging" ||
+    value.kind === "prod"
+  ) {
+    return true;
+  }
+
+  return value.kind === "preview" && typeof value.id === "string";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

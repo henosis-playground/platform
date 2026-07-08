@@ -9,7 +9,7 @@ import {
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ComponentArtifact, ComponentRecord, JsonValue } from "@henosis/core";
+import type { ComponentArtifact, ComponentRecord, Env, JsonValue } from "@henosis/core";
 import {
   readComponentDependencyGraph,
   resolveManifestComponents,
@@ -38,7 +38,7 @@ export type PinnedExecutionComponent = {
   disposition: "pinned";
   ref: string;
   digest: string;
-  envId: string;
+  env: Env;
   outputs: JsonValue;
   records: readonly ComponentRecord[];
   artifacts: readonly ComponentArtifact[];
@@ -46,8 +46,8 @@ export type PinnedExecutionComponent = {
 
 export type FollowExecutionComponent = {
   disposition: "follow";
-  followsEnvId: "dev";
-  envId: "dev";
+  follows: Env;
+  env: Env;
   outputs: JsonValue;
   records: readonly ComponentRecord[];
   artifacts: readonly ComponentArtifact[];
@@ -58,13 +58,13 @@ export type ExecutionComponent =
   | FollowExecutionComponent;
 
 export type ExecutionResult = {
-  envId: string;
+  env: Env;
   components: Record<string, ExecutionComponent>;
 };
 
 type WorkerComponentInfo = {
   disposition: "pinned" | "follow";
-  envId: string;
+  env: Env;
   ref: string;
   digest: string;
 };
@@ -78,7 +78,7 @@ type WorkerInput = {
 
 type WorkerSuccessComponent = {
   disposition: "pinned" | "follow";
-  envId: string;
+  env: Env;
   ref: string;
   digest: string;
   outputs: JsonValue;
@@ -125,7 +125,7 @@ export async function executeComponents(opts: {
         component.name,
         {
           disposition: component.disposition,
-          envId: component.envId,
+          env: component.env,
           ref: component.ref,
           digest: component.digest,
         },
@@ -141,7 +141,7 @@ export async function executeComponents(opts: {
   }
 
   return {
-    envId: opts.manifest.environment.id,
+    env: opts.manifest.environment,
     components: Object.fromEntries(
       resolved.map((component) => {
         const output = workerOutput.components[component.name];
@@ -159,8 +159,8 @@ export async function executeComponents(opts: {
             component.name,
             {
               disposition: "follow",
-              followsEnvId: "dev",
-              envId: "dev",
+              follows: { kind: "dev" },
+              env: { kind: "dev" },
               outputs: output.outputs,
               records: output.records,
               artifacts: output.artifacts,
@@ -172,7 +172,7 @@ export async function executeComponents(opts: {
           component.name,
           {
             disposition: "pinned",
-            envId: component.envId,
+            env: component.env,
             ref: component.ref,
             digest: component.digest,
             outputs: output.outputs,

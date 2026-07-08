@@ -29,12 +29,12 @@ describe("executeComponents", () => {
         "@henosis/platform-mock": "*",
       },
       `
-        import { defineComponent, envId, h } from "@henosis/platform-mock";
+        import { defineComponent, envName, h } from "@henosis/platform-mock";
 
         export default defineComponent({
           outputs: h.object({ api: h.url() }),
           build: (_ctx, env) => ({
-            api: \`https://service-a-\${envId(env)}.henosis.example\`,
+            api: \`https://service-a-\${envName(env)}.henosis.example\`,
           }),
         });
       `,
@@ -48,7 +48,7 @@ describe("executeComponents", () => {
         "@henosis/service-a": "*",
       },
       `
-        import { defineComponent, envId, h } from "@henosis/platform-mock";
+        import { defineComponent, envName, h } from "@henosis/platform-mock";
         import serviceA from "@henosis/service-a";
 
         export default defineComponent({
@@ -57,7 +57,7 @@ describe("executeComponents", () => {
             upstream: h.url(),
           }),
           build: (_ctx, env) => ({
-            app: \`https://service-b-\${envId(env)}.henosis.example\`,
+            app: \`https://service-b-\${envName(env)}.henosis.example\`,
             upstream: serviceA.api,
           }),
         });
@@ -101,8 +101,8 @@ describe("executeComponents", () => {
 
     expect(result.components["service-a"]).toEqual({
       disposition: "follow",
-      followsEnvId: "dev",
-      envId: "dev",
+      follows: { kind: "dev" },
+      env: { kind: "dev" },
       outputs: {
         api: "https://service-a-dev.henosis.example",
       },
@@ -112,7 +112,7 @@ describe("executeComponents", () => {
 
     expect(result.components["service-b"]).toEqual({
       disposition: "pinned",
-      envId: "pr-test",
+      env: { kind: "preview", id: "pr-test" },
       ref: "feature-service-b",
       digest: "sha256:service-b-preview",
       outputs: {
@@ -203,12 +203,12 @@ describe("executeComponents", () => {
         "@henosis/platform-mock": "*",
       },
       `
-        import { defineComponent, envId, h } from "@henosis/platform-mock";
+        import { defineComponent, envName, h } from "@henosis/platform-mock";
 
         export default defineComponent({
           outputs: h.object({ api: h.url() }),
           build: (_ctx, env) => ({
-            api: \`https://service-a-\${envId(env)}.henosis.example\`,
+            api: \`https://service-a-\${envName(env)}.henosis.example\`,
           }),
         });
       `,
@@ -222,7 +222,7 @@ describe("executeComponents", () => {
         "@henosis/service-a": "*",
       },
       `
-        import { defineComponent, envId, h } from "@henosis/platform-mock";
+        import { defineComponent, envName, h } from "@henosis/platform-mock";
         import serviceA from "@henosis/service-a";
 
         export default defineComponent({
@@ -231,7 +231,7 @@ describe("executeComponents", () => {
             upstream: h.url(),
           }),
           build: (_ctx, env) => ({
-            app: \`https://service-b-\${envId(env)}.henosis.example\`,
+            app: \`https://service-b-\${envName(env)}.henosis.example\`,
             upstream: serviceA.api,
           }),
         });

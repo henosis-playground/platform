@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Env } from "@henosis/core";
 import {
   isPinned,
   type EnvironmentManifest,
@@ -24,8 +25,8 @@ export type ResolvedComponent = {
   ref: string;
   digest: string;
   disposition: ComponentDisposition;
-  envId: string;
-  followsEnvId?: "dev";
+  env: Env;
+  follows?: Env;
 };
 
 export type ComponentDependencyGraph = Record<string, string[]>;
@@ -174,7 +175,7 @@ export function resolveManifestComponents(opts: {
         name,
         entry,
         "pinned",
-        opts.manifest.environment.id,
+        opts.manifest.environment,
       );
     }
 
@@ -186,8 +187,8 @@ export function resolveManifestComponents(opts: {
     }
 
     return {
-      ...resolvedComponentFromPinned(name, devEntry, "follow", "dev"),
-      followsEnvId: "dev",
+      ...resolvedComponentFromPinned(name, devEntry, "follow", { kind: "dev" }),
+      follows: { kind: "dev" },
     };
   });
 }
@@ -259,7 +260,7 @@ function resolvedComponentFromPinned(
   name: string,
   entry: PinnedEntry,
   disposition: ComponentDisposition,
-  envId: string,
+  env: Env,
 ): ResolvedComponent {
   return {
     name,
@@ -268,7 +269,7 @@ function resolvedComponentFromPinned(
     ref: entry.ref,
     digest: entry.digest,
     disposition,
-    envId,
+    env,
   };
 }
 

@@ -15,14 +15,14 @@ export const h = {
         return makeLeafSchema("url");
     },
 };
-export function envId(env) {
+export function envName(env) {
     return env.kind === "preview" ? env.id : env.kind;
 }
-export function envFromId(id) {
-    if (id === "dev" || id === "staging" || id === "prod") {
-        return { kind: id };
+export function envFromName(name) {
+    if (name === "dev" || name === "staging" || name === "prod") {
+        return { kind: name };
     }
-    return { kind: "preview", id };
+    return { kind: "preview", id: name };
 }
 export function defineComponent(spec) {
     assertValidOutputNames(spec.outputs);

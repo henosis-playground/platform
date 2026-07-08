@@ -62,7 +62,7 @@ async function runGate(opts: GateCliOptions): Promise<{
       report,
       text: formatGateText({
         ok: false,
-        envId: manifest.environment.id,
+        environment: manifest.environment,
         components,
         failures,
         compileOutput,
@@ -84,7 +84,7 @@ async function runGate(opts: GateCliOptions): Promise<{
       report,
       text: formatGateText({
         ok: true,
-        envId: manifest.environment.id,
+        environment: manifest.environment,
         components,
         execution,
         failures: [],
@@ -100,7 +100,7 @@ async function runGate(opts: GateCliOptions): Promise<{
       report,
       text: formatGateText({
         ok: false,
-        envId: manifest.environment.id,
+        environment: manifest.environment,
         components,
         failures: [failure],
       }),

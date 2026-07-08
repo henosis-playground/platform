@@ -1,2 +1,2 @@
-export { defineComponent, envId, h } from "@henosis/core";
+export { defineComponent, envName, h } from "@henosis/core";
 //# sourceMappingURL=index.js.map

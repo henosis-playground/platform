@@ -14,7 +14,7 @@ describe("parseManifest", () => {
         digest = "sha256:abc"
       `),
     ).toEqual({
-      environment: { id: "dev" },
+      environment: { kind: "dev" },
       components: {
         "service-a": {
           kind: "pinned",
@@ -47,7 +47,7 @@ describe("parseManifest", () => {
         [components]
       `),
     ).toEqual({
-      environment: { id: "preview-empty" },
+      environment: { kind: "preview", id: "preview-empty" },
       components: {},
     });
   });
