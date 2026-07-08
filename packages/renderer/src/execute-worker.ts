@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   bindComponentIdentity,
+  envFromId,
   evaluateComponent,
   getComponentDefinition,
   isComponentModule,
@@ -168,7 +169,7 @@ function evaluateOne(
   let result;
   try {
     result = evaluateComponent(module, {
-      env: { id: info.envId },
+      env: envFromId(info.envId),
       image: { ref: info.ref, digest: info.digest },
     });
   } catch (error) {

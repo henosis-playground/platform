@@ -14,9 +14,11 @@ declare const refTypeBrand: unique symbol;
 
 export type EnvId = string;
 
-export type Env = {
-  readonly id: EnvId;
-};
+export type StableEnvKind = "dev" | "staging" | "prod";
+
+export type Env =
+  | { readonly kind: StableEnvKind }
+  | { readonly kind: "preview"; readonly id: EnvId };
 
 export type ImageRef = {
   readonly ref: string;
@@ -156,6 +158,18 @@ export const h = {
     return makeLeafSchema("url") as UrlSchema;
   },
 };
+
+export function envId(env: Env): EnvId {
+  return env.kind === "preview" ? env.id : env.kind;
+}
+
+export function envFromId(id: EnvId): Env {
+  if (id === "dev" || id === "staging" || id === "prod") {
+    return { kind: id };
+  }
+
+  return { kind: "preview", id };
+}
 
 export function defineComponent<Shape extends SchemaShape>(
   spec: ComponentSpec<ObjectSchema<Shape>>,

@@ -3,6 +3,8 @@ import {
   bindComponentIdentity,
   componentDefinitionSymbol,
   defineComponent,
+  envFromId,
+  envId,
   evaluateComponent,
   getComponentDefinition,
   h,
@@ -90,12 +92,12 @@ describe("evaluation and validation", () => {
     const component = defineComponent({
       outputs: h.object({ api: h.url() }),
       build: (ctx: BuildContext, env) => ({
-        api: `https://service-a-${env.id}-${ctx.image.digest.slice(7)}.henosis.example`,
+        api: `https://service-a-${envId(env)}-${ctx.image.digest.slice(7)}.henosis.example`,
       }),
     });
 
     const result = evaluateComponent(component, {
-      env: { id: "pr-test" },
+      env: envFromId("pr-test"),
       image: { ref: "service-a:pr-test", digest: "sha256:abc" },
     });
 
@@ -105,6 +107,25 @@ describe("evaluation and validation", () => {
       },
       records: [],
       artifacts: [],
+    });
+  });
+
+  it("narrows typed environment kinds", () => {
+    const component = defineComponent({
+      outputs: h.object({ api: h.url() }),
+      build: (_ctx, env) => {
+        const id = env.kind === "preview" ? env.id : env.kind;
+        return { api: `https://service-a-${id}.henosis.example` };
+      },
+    });
+
+    expect(
+      evaluateComponent(component, {
+        env: envFromId("dev"),
+        image: { ref: "service-a:dev", digest: "sha256:abc" },
+      }).outputs,
+    ).toEqual({
+      api: "https://service-a-dev.henosis.example",
     });
   });
 

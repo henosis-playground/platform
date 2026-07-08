@@ -1,4 +1,4 @@
-export { defineComponent, h } from "@henosis/core";
+export { defineComponent, envId, h } from "@henosis/core";
 export type {
   ArtifactWriter,
   BuildContext,

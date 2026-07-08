@@ -15,6 +15,15 @@ export const h = {
         return makeLeafSchema("url");
     },
 };
+export function envId(env) {
+    return env.kind === "preview" ? env.id : env.kind;
+}
+export function envFromId(id) {
+    if (id === "dev" || id === "staging" || id === "prod") {
+        return { kind: id };
+    }
+    return { kind: "preview", id };
+}
 export function defineComponent(spec) {
     assertValidOutputNames(spec.outputs);
     const definition = {

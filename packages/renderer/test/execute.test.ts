@@ -29,12 +29,12 @@ describe("executeComponents", () => {
         "@henosis/platform-mock": "*",
       },
       `
-        import { defineComponent, h } from "@henosis/platform-mock";
+        import { defineComponent, envId, h } from "@henosis/platform-mock";
 
         export default defineComponent({
           outputs: h.object({ api: h.url() }),
           build: (_ctx, env) => ({
-            api: \`https://service-a-\${env.id}.henosis.example\`,
+            api: \`https://service-a-\${envId(env)}.henosis.example\`,
           }),
         });
       `,
@@ -48,7 +48,7 @@ describe("executeComponents", () => {
         "@henosis/service-a": "*",
       },
       `
-        import { defineComponent, h } from "@henosis/platform-mock";
+        import { defineComponent, envId, h } from "@henosis/platform-mock";
         import serviceA from "@henosis/service-a";
 
         export default defineComponent({
@@ -57,7 +57,7 @@ describe("executeComponents", () => {
             upstream: h.url(),
           }),
           build: (_ctx, env) => ({
-            app: \`https://service-b-\${env.id}.henosis.example\`,
+            app: \`https://service-b-\${envId(env)}.henosis.example\`,
             upstream: serviceA.api,
           }),
         });
@@ -203,12 +203,12 @@ describe("executeComponents", () => {
         "@henosis/platform-mock": "*",
       },
       `
-        import { defineComponent, h } from "@henosis/platform-mock";
+        import { defineComponent, envId, h } from "@henosis/platform-mock";
 
         export default defineComponent({
           outputs: h.object({ api: h.url() }),
           build: (_ctx, env) => ({
-            api: \`https://service-a-\${env.id}.henosis.example\`,
+            api: \`https://service-a-\${envId(env)}.henosis.example\`,
           }),
         });
       `,
@@ -222,7 +222,7 @@ describe("executeComponents", () => {
         "@henosis/service-a": "*",
       },
       `
-        import { defineComponent, h } from "@henosis/platform-mock";
+        import { defineComponent, envId, h } from "@henosis/platform-mock";
         import serviceA from "@henosis/service-a";
 
         export default defineComponent({
@@ -231,7 +231,7 @@ describe("executeComponents", () => {
             upstream: h.url(),
           }),
           build: (_ctx, env) => ({
-            app: \`https://service-b-\${env.id}.henosis.example\`,
+            app: \`https://service-b-\${envId(env)}.henosis.example\`,
             upstream: serviceA.api,
           }),
         });
