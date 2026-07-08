@@ -1,11 +1,15 @@
 import type { ComponentDependencyGraph, ResolvedComponent } from "./assembler.js";
-import type { ExecutionResult } from "./execute.js";
-import { formatBinding } from "./render.js";
+import type {
+  ExecutionComponent,
+  ExecutionResult,
+  PipelineFailure,
+} from "./execute.js";
+import { formatOutputs } from "./render.js";
 
 export type GateFailure = {
   component: string;
-  consumerOf: string;
-  kind: "compile" | "render";
+  consumerOf?: string;
+  kind: "compile" | "render" | "validate" | "resolve";
   message: string;
   excerpt: string;
 };
@@ -59,6 +63,16 @@ export function parseCompileFailures(
   ];
 }
 
+export function pipelineFailure(failure: PipelineFailure): GateFailure {
+  return {
+    component: failure.component,
+    consumerOf: failure.consumerOf,
+    kind: failure.kind,
+    message: failure.message,
+    excerpt: failure.excerpt,
+  };
+}
+
 export function renderFailure(message: string, excerpt = message): GateFailure {
   return {
     component: "renderer",
@@ -110,9 +124,9 @@ export function formatGateText(opts: {
     return `${lines.join("\n")}\n`;
   }
 
-  lines.push("", "Render output:");
+  lines.push("", "Resolved outputs:");
   if (opts.execution === undefined) {
-    lines.push("  no render output available");
+    lines.push("  no resolved outputs available");
   } else {
     lines.push(...formatExecutionSummary(opts.execution));
   }
@@ -123,7 +137,7 @@ export function formatGateText(opts: {
 function formatComponentSummary(component: ResolvedComponent): string {
   const sha = component.ref.slice(0, 7);
   const disposition =
-    component.disposition === "render" ? "[RENDER]" : "[FOLLOW dev]";
+    component.disposition === "pinned" ? "[PINNED]" : "[FOLLOW dev]";
   return `  ${component.name}  ${disposition} sha:${sha}`;
 }
 
@@ -131,25 +145,21 @@ function formatExecutionSummary(execution: ExecutionResult): string[] {
   return Object.entries(execution.components).flatMap(([name, component]) => {
     if (component.disposition === "follow") {
       return [
-        `  ${name}: following dev (not deployed)`,
-        ...formatBinding(component.binding).map((line) => `    ${line}`),
+        `  ${name}: follows dev (not materialised)`,
+        ...formatOutputs(component.outputs).map((line) => `    ${line}`),
       ];
     }
 
-    const resourceLines = component.resources.flatMap((resource) => {
-      if (resource.kind === "service") {
-        return Object.entries(resource.env).map(([key, value]) => `    ${key}=${value}`);
-      }
-
-      return [`    postgres ${resource.name}=${resource.url}`];
-    });
-
     return [
-      `  ${name}: deploying at ${component.digest} into namespace ${component.namespace}`,
-      ...resourceLines,
+      `  ${name}: pinned ${component.digest}`,
+      ...formatComponentOutputs(component).map((line) => `    ${line}`),
       "",
     ];
   });
+}
+
+function formatComponentOutputs(component: ExecutionComponent): string[] {
+  return formatOutputs(component.outputs);
 }
 
 function parseErrorFilePath(line: string): string | undefined {
@@ -168,9 +178,10 @@ function parseErrorFilePath(line: string): string | undefined {
 
 function componentFromPath(filePath: string): string | undefined {
   const normalized = filePath.replaceAll("\\", "/");
-  const nodeModulesMatch = /\/node_modules\/(?:\.pnpm\/.+?\/node_modules\/)?@henosis\/([^/]+)\/src\//.exec(
-    normalized,
-  );
+  const nodeModulesMatch =
+    /\/node_modules\/(?:\.pnpm\/.+?\/node_modules\/)?@henosis\/([^/]+)\/src\//.exec(
+      normalized,
+    );
   if (nodeModulesMatch !== null) {
     return nodeModulesMatch[1];
   }

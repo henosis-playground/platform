@@ -4,24 +4,25 @@ import { fileURLToPath } from "node:url";
 import {
   assembleAndCheck,
   readComponentDependencyGraph,
-  resolveLockfileComponents,
+  resolveManifestComponents,
   type LocalOverrides,
 } from "./assembler.js";
-import { executeComponents } from "./execute.js";
+import { executeComponents, ExecutionPipelineError } from "./execute.js";
 import {
   formatGateText,
   parseCompileFailures,
+  pipelineFailure,
   renderFailure,
   type GateReport,
 } from "./gate-report.js";
-import { parseLockfile } from "./lockfile.js";
+import { parseManifest } from "./manifest.js";
 import { currentPlatformRef, defaultPlatformRoot } from "./render.js";
 
 type GateCliOptions = {
-  lockfilePath: string;
+  manifestPath: string;
   scratchDir: string;
   outputDir: string;
-  devLockfilePath: string;
+  devManifestPath: string;
   localOverrides: LocalOverrides;
 };
 
@@ -29,15 +30,15 @@ async function runGate(opts: GateCliOptions): Promise<{
   report: GateReport;
   text: string;
 }> {
-  const lockfile = parseLockfile(await readFile(opts.lockfilePath, "utf8"));
-  const devLockfile = parseLockfile(await readFile(opts.devLockfilePath, "utf8"));
+  const manifest = parseManifest(await readFile(opts.manifestPath, "utf8"));
+  const devManifest = parseManifest(await readFile(opts.devManifestPath, "utf8"));
   const platformRoot = defaultPlatformRoot();
   const platformRef = currentPlatformRef(platformRoot);
-  const components = resolveLockfileComponents({ lockfile, devLockfile });
+  const components = resolveManifestComponents({ manifest, devManifest });
 
   const assembly = await assembleAndCheck({
-    lockfile,
-    devLockfile,
+    manifest,
+    devManifest,
     scratchDir: opts.scratchDir,
     platformRef,
     localOverrides: opts.localOverrides,
@@ -51,7 +52,7 @@ async function runGate(opts: GateCliOptions): Promise<{
     try {
       graph = await readComponentDependencyGraph(opts.scratchDir, componentNames);
     } catch {
-      // The install may have failed before package manifests existed.
+      // Install may have failed before package manifests existed.
     }
 
     const compileOutput = assembly.compileOutput ?? "Workspace assembly failed";
@@ -61,7 +62,7 @@ async function runGate(opts: GateCliOptions): Promise<{
       report,
       text: formatGateText({
         ok: false,
-        envId: lockfile.environment.id,
+        envId: manifest.environment.id,
         components,
         failures,
         compileOutput,
@@ -71,8 +72,8 @@ async function runGate(opts: GateCliOptions): Promise<{
 
   try {
     const execution = await executeComponents({
-      lockfile,
-      devLockfile,
+      manifest,
+      devManifest,
       scratchDir: opts.scratchDir,
       platformRoot,
       localOverrides: opts.localOverrides,
@@ -83,23 +84,25 @@ async function runGate(opts: GateCliOptions): Promise<{
       report,
       text: formatGateText({
         ok: true,
-        envId: lockfile.environment.id,
+        envId: manifest.environment.id,
         components,
         execution,
         failures: [],
       }),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const failures = [renderFailure(message)];
-    const report: GateReport = { ok: false, failures };
+    const failure =
+      error instanceof ExecutionPipelineError
+        ? pipelineFailure(error.failure)
+        : renderFailure(error instanceof Error ? error.message : String(error));
+    const report: GateReport = { ok: false, failures: [failure] };
     return {
       report,
       text: formatGateText({
         ok: false,
-        envId: lockfile.environment.id,
+        envId: manifest.environment.id,
         components,
-        failures,
+        failures: [failure],
       }),
     };
   }
@@ -120,23 +123,23 @@ async function main(): Promise<void> {
 }
 
 function parseArgs(args: readonly string[]): GateCliOptions {
-  const lockfilePath = args[0];
-  if (lockfilePath === undefined || args.includes("--help")) {
+  const manifestPath = args[0];
+  if (manifestPath === undefined || args.includes("--help")) {
     throw new Error(
-      "Usage: henosis-gate <lockfile.toml> --scratch <scratch-dir> [--output <dir>] [--dev-lockfile <dev.toml>] [--local-override name=/path]",
+      "Usage: henosis-gate <candidate.toml> --scratch <scratch-dir> [--output <dir>] [--dev-lockfile <dev.toml>] [--local-override name=/path]",
     );
   }
 
   const scratchDir = requiredOption(args, "--scratch");
   const outputDir = optionValue(args, "--output") ?? process.cwd();
-  const devLockfilePath =
-    optionValue(args, "--dev-lockfile") ?? path.join(path.dirname(lockfilePath), "dev.toml");
+  const devManifestPath =
+    optionValue(args, "--dev-lockfile") ?? path.join(path.dirname(manifestPath), "dev.toml");
 
   return {
-    lockfilePath,
+    manifestPath,
     scratchDir,
     outputDir,
-    devLockfilePath,
+    devManifestPath,
     localOverrides: parseLocalOverrides(args),
   };
 }

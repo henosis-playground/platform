@@ -3,8 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { executeComponents } from "../src/execute.js";
-import { parseLockfile } from "../src/lockfile.js";
+import { ExecutionPipelineError, executeComponents } from "../src/execute.js";
+import { parseManifest } from "../src/manifest.js";
+import { writeRenderOutput } from "../src/render.js";
 
 const scratchDirs: string[] = [];
 
@@ -17,13 +18,53 @@ afterEach(async () => {
 });
 
 describe("executeComponents", () => {
-  it("materialises follow-dev producer bindings before the preview consumer build sees them", async () => {
+  it("resolves follow-dev producer outputs for a pinned preview consumer without materialising the follower", async () => {
     const scratchDir = await makeScratchWorkspace();
-    const platformRoot = path.resolve(
-      fileURLToPath(new URL("../../..", import.meta.url)),
+    const platformRoot = platformRepoRoot();
+
+    await writeComponent(
+      scratchDir,
+      "service-a",
+      {
+        "@henosis/platform-mock": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+
+        export default defineComponent({
+          outputs: h.object({ api: h.url() }),
+          build: (_ctx, env) => ({
+            api: \`https://service-a-\${env.id}.henosis.example\`,
+          }),
+        });
+      `,
     );
 
-    const lockfile = parseLockfile(`
+    await writeComponent(
+      scratchDir,
+      "service-b",
+      {
+        "@henosis/platform-mock": "*",
+        "@henosis/service-a": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+        import serviceA from "@henosis/service-a";
+
+        export default defineComponent({
+          outputs: h.object({
+            app: h.url(),
+            upstream: h.url(),
+          }),
+          build: (_ctx, env) => ({
+            app: \`https://service-b-\${env.id}.henosis.example\`,
+            upstream: serviceA.api,
+          }),
+        });
+      `,
+    );
+
+    const manifest = parseManifest(`
       [environment]
       id = "pr-test"
 
@@ -36,7 +77,7 @@ describe("executeComponents", () => {
       follow = "dev"
     `);
 
-    const devLockfile = parseLockfile(`
+    const devManifest = parseManifest(`
       [environment]
       id = "dev"
 
@@ -52,79 +93,175 @@ describe("executeComponents", () => {
     `);
 
     const result = await executeComponents({
-      lockfile,
-      devLockfile,
+      manifest,
+      devManifest,
       scratchDir,
       platformRoot,
     });
 
-    const serviceA = result.components["service-a"];
-    expect(serviceA).toEqual({
+    expect(result.components["service-a"]).toEqual({
       disposition: "follow",
       followsEnvId: "dev",
-      binding: {
-        api: "http://service-a.henosis-dev.svc.cluster.local:80",
-        host: "service-a.henosis-dev.svc.cluster.local",
+      envId: "dev",
+      outputs: {
+        api: "https://service-a-dev.henosis.example",
+      },
+      records: [],
+      artifacts: [],
+    });
+
+    expect(result.components["service-b"]).toEqual({
+      disposition: "pinned",
+      envId: "pr-test",
+      ref: "feature-service-b",
+      digest: "sha256:service-b-preview",
+      outputs: {
+        app: "https://service-b-pr-test.henosis.example",
+        upstream: "https://service-a-dev.henosis.example",
+      },
+      records: [],
+      artifacts: [],
+    });
+
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), "henosis-render-"));
+    scratchDirs.push(outputDir);
+    const render = await writeRenderOutput({
+      execution: result,
+      outputDir,
+      generatedAt: "2026-07-08T00:00:00.000Z",
+    });
+
+    expect(Object.keys(render.componentFiles)).toEqual(["service-b"]);
+    expect(render.manifest.components).toEqual({
+      "service-b": {
+        ref: "feature-service-b",
+        digest: "sha256:service-b-preview",
+        outputs: {
+          app: "https://service-b-pr-test.henosis.example",
+          upstream: "https://service-a-dev.henosis.example",
+        },
+        records: [],
+        artifacts: [],
       },
     });
+  });
 
-    const serviceB = result.components["service-b"];
-    expect(serviceB?.disposition).toBe("render");
-    if (serviceB?.disposition !== "render") {
-      throw new Error("service-b was not rendered");
-    }
+  it("reports validation failures with component, output path, expected, and actual", async () => {
+    const scratchDir = await makeScratchWorkspace();
+    const platformRoot = platformRepoRoot();
 
-    expect(serviceB.namespace).toBe("henosis-pr-test");
-    expect(serviceB.binding).toEqual({
-      app: "https://service-b-pr-test.henosis.example",
-    });
+    await writeComponent(
+      scratchDir,
+      "service-a",
+      {
+        "@henosis/platform-mock": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
 
-    const serviceRecord = serviceB.resources.find(
-      (resource) => resource.kind === "service",
+        export default defineComponent({
+          outputs: h.object({ api: h.url() }),
+          build: () => ({ api: "not a url" }),
+        });
+      `,
     );
-    expect(serviceRecord).toEqual({
-      kind: "service",
-      component: "service-b",
-      image: { ref: "feature-service-b", digest: "sha256:service-b-preview" },
-      port: 3000,
-      env: {
-        SERVICE_A_URL: "http://service-a.henosis-dev.svc.cluster.local:80",
-        CLONE_DATABASE_URL:
-          "postgres://henosis:henosis@service-b-clone-postgres.henosis-pr-test.svc.cluster.local:5432/clone",
-        SHARED_DATABASE_URL:
-          "postgres://henosis:henosis@service-b-shared-postgres.henosis-dev.svc.cluster.local:5432/shared",
+
+    const manifest = parseManifest(`
+      [environment]
+      id = "dev"
+
+      [components.service-a]
+      repo = "henosis-playground/service-a"
+      ref = "service-a-dev"
+      digest = "sha256:service-a-dev"
+    `);
+
+    await expect(
+      executeComponents({
+        manifest,
+        devManifest: manifest,
+        scratchDir,
+        platformRoot,
+      }),
+    ).rejects.toMatchObject({
+      failure: {
+        component: "service-a",
+        kind: "validate",
+        message: "service-a.api expected url, got string",
       },
-      namespace: "henosis-pr-test",
     });
+  });
 
-    expect(
-      serviceB.resources.filter((resource) => resource.component === "service-a"),
-    ).toEqual([]);
+  it("reports refs whose source component is absent from the manifest", async () => {
+    const scratchDir = await makeScratchWorkspace();
+    const platformRoot = platformRepoRoot();
 
-    expect(
-      serviceB.resources.find(
-        (resource) => resource.kind === "postgres" && resource.name === "clone",
-      ),
-    ).toEqual({
-      kind: "postgres",
-      component: "service-b",
-      name: "clone",
-      previews: "clone",
-      url: "postgres://henosis:henosis@service-b-clone-postgres.henosis-pr-test.svc.cluster.local:5432/clone",
-      namespace: "henosis-pr-test",
-    });
+    await writeComponent(
+      scratchDir,
+      "service-a",
+      {
+        "@henosis/platform-mock": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
 
-    expect(
-      serviceB.resources.find(
-        (resource) => resource.kind === "postgres" && resource.name === "shared",
-      ),
-    ).toEqual({
-      kind: "postgres",
-      component: "service-b",
-      name: "shared",
-      previews: "share-dev",
-      url: "postgres://henosis:henosis@service-b-shared-postgres.henosis-dev.svc.cluster.local:5432/shared",
-      namespace: "henosis-dev",
+        export default defineComponent({
+          outputs: h.object({ api: h.url() }),
+          build: (_ctx, env) => ({
+            api: \`https://service-a-\${env.id}.henosis.example\`,
+          }),
+        });
+      `,
+    );
+
+    await writeComponent(
+      scratchDir,
+      "service-b",
+      {
+        "@henosis/platform-mock": "*",
+        "@henosis/service-a": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+        import serviceA from "@henosis/service-a";
+
+        export default defineComponent({
+          outputs: h.object({
+            app: h.url(),
+            upstream: h.url(),
+          }),
+          build: (_ctx, env) => ({
+            app: \`https://service-b-\${env.id}.henosis.example\`,
+            upstream: serviceA.api,
+          }),
+        });
+      `,
+    );
+
+    const manifest = parseManifest(`
+      [environment]
+      id = "pr-test"
+
+      [components.service-b]
+      repo = "henosis-playground/service-b"
+      ref = "feature-service-b"
+      digest = "sha256:service-b-preview"
+    `);
+
+    await expect(
+      executeComponents({
+        manifest,
+        devManifest: manifest,
+        scratchDir,
+        platformRoot,
+      }),
+    ).rejects.toMatchObject({
+      failure: {
+        component: "service-b",
+        consumerOf: "service-a",
+        kind: "resolve",
+        message: "service-b consumes service-a.api which no longer exists",
+      },
     });
   });
 });
@@ -136,69 +273,27 @@ async function makeScratchWorkspace(): Promise<string> {
   const henosisModules = path.join(scratchDir, "node_modules", "@henosis");
   await mkdir(henosisModules, { recursive: true });
 
-  const platformRoot = path.resolve(
-    fileURLToPath(new URL("../../..", import.meta.url)),
+  const platformRoot = platformRepoRoot();
+  await copyPackage(
+    path.join(platformRoot, "packages", "core"),
+    path.join(henosisModules, "core"),
   );
-  const sdkSource = path.join(platformRoot, "packages", "sdk");
-  await cp(sdkSource, path.join(henosisModules, "sdk"), {
-    recursive: true,
-    filter: (entry) => {
-      const relative = path.relative(sdkSource, entry);
-      return !relative.startsWith("dist") && !relative.startsWith("node_modules");
-    },
-  });
-
-  await writeComponent(
-    scratchDir,
-    "service-a",
-    {
-      "@henosis/sdk": "*",
-    },
-    `
-      import { defineComponent } from "@henosis/sdk";
-
-      export default defineComponent("service-a", {
-        binding: (b) => ({ api: b.httpUrl(), host: b.host() }),
-        build: () => {
-          throw new Error("service-a build should not execute for follow dev");
-        },
-      });
-    `,
-  );
-
-  await writeComponent(
-    scratchDir,
-    "service-b",
-    {
-      "@henosis/sdk": "*",
-      "@henosis/service-a": "*",
-    },
-    `
-      import { defineComponent } from "@henosis/sdk";
-      import serviceA from "@henosis/service-a";
-
-      export default defineComponent("service-b", {
-        binding: (b) => ({ app: b.publicUrl() }),
-        build: (ctx) => {
-          const a = ctx.use(serviceA);
-          const cloned = ctx.postgres("clone", { previews: "clone" });
-          const shared = ctx.postgres("shared", { previews: "share-dev" });
-
-          ctx.service({
-            image: ctx.image,
-            port: 3000,
-            env: {
-              SERVICE_A_URL: a.api,
-              CLONE_DATABASE_URL: cloned.url,
-              SHARED_DATABASE_URL: shared.url,
-            },
-          });
-        },
-      });
-    `,
+  await copyPackage(
+    path.join(platformRoot, "packages", "platform-mock"),
+    path.join(henosisModules, "platform-mock"),
   );
 
   return scratchDir;
+}
+
+async function copyPackage(source: string, target: string): Promise<void> {
+  await cp(source, target, {
+    recursive: true,
+    filter: (entry) => {
+      const relative = path.relative(source, entry);
+      return !relative.startsWith("node_modules");
+    },
+  });
 }
 
 async function writeComponent(
@@ -218,6 +313,7 @@ async function writeComponent(
         private: true,
         type: "module",
         exports: { ".": "./src/index.ts" },
+        henosis: { component: name },
         dependencies,
       },
       null,
@@ -225,4 +321,8 @@ async function writeComponent(
     )}\n`,
   );
   await writeFile(path.join(packageDir, "src", "index.ts"), source);
+}
+
+function platformRepoRoot(): string {
+  return path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 }

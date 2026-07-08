@@ -1,17 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ResourceRecord } from "@henosis/sdk";
+import type { ComponentArtifact, ComponentRecord, JsonValue } from "@henosis/core";
 import { assembleAndCheck, type LocalOverrides } from "./assembler.js";
 import {
   executeComponents,
   type ExecutionComponent,
   type ExecutionResult,
-  type MaterialisedBinding,
 } from "./execute.js";
-import { isPinned, parseLockfile, type Lockfile } from "./lockfile.js";
+import { isPinned, parseManifest, type EnvironmentManifest } from "./manifest.js";
 
 export type RenderManifest = {
   envId: string;
@@ -19,20 +18,13 @@ export type RenderManifest = {
   components: Record<string, RenderManifestComponent>;
 };
 
-export type RenderManifestComponent =
-  | {
-      disposition: "render";
-      ref: string;
-      digest: string;
-      namespace: string;
-      binding: MaterialisedBinding;
-      resources: ResourceRecord[];
-    }
-  | {
-      disposition: "follow";
-      followsEnvId: "dev";
-      binding: MaterialisedBinding;
-    };
+export type RenderManifestComponent = {
+  ref: string;
+  digest: string;
+  outputs: JsonValue;
+  records: readonly ComponentRecord[];
+  artifacts: readonly ComponentArtifact[];
+};
 
 export type RenderOutput = {
   manifestPath: string;
@@ -40,9 +32,9 @@ export type RenderOutput = {
   manifest: RenderManifest;
 };
 
-export async function renderLockfile(opts: {
-  lockfile: Lockfile;
-  devLockfile: Lockfile;
+export async function renderManifest(opts: {
+  manifest: EnvironmentManifest;
+  devManifest: EnvironmentManifest;
   scratchDir: string;
   outputDir: string;
   platformRef: string;
@@ -50,8 +42,8 @@ export async function renderLockfile(opts: {
   localOverrides?: LocalOverrides;
 }): Promise<RenderOutput> {
   const assembly = await assembleAndCheck({
-    lockfile: opts.lockfile,
-    devLockfile: opts.devLockfile,
+    manifest: opts.manifest,
+    devManifest: opts.devManifest,
     scratchDir: opts.scratchDir,
     platformRef: opts.platformRef,
     localOverrides: opts.localOverrides,
@@ -62,8 +54,8 @@ export async function renderLockfile(opts: {
   }
 
   const execution = await executeComponents({
-    lockfile: opts.lockfile,
-    devLockfile: opts.devLockfile,
+    manifest: opts.manifest,
+    devManifest: opts.devManifest,
     scratchDir: opts.scratchDir,
     platformRoot: opts.platformRoot,
     localOverrides: opts.localOverrides,
@@ -82,23 +74,34 @@ export async function writeRenderOutput(opts: {
 }): Promise<RenderOutput> {
   await mkdir(opts.outputDir, { recursive: true });
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
+  const pinnedComponents = Object.entries(opts.execution.components).filter(
+    (entry): entry is [string, Extract<ExecutionComponent, { disposition: "pinned" }>] =>
+      entry[1].disposition === "pinned",
+  );
+
   const manifest: RenderManifest = {
     envId: opts.execution.envId,
     generatedAt,
     components: Object.fromEntries(
-      Object.entries(opts.execution.components).map(([name, component]) => [
+      pinnedComponents.map(([name, component]) => [
         name,
-        manifestComponent(component),
+        {
+          ref: component.ref,
+          digest: component.digest,
+          outputs: component.outputs,
+          records: component.records,
+          artifacts: component.artifacts,
+        },
       ]),
     ),
   };
 
   const componentFiles: Record<string, string> = {};
-  for (const [name, component] of Object.entries(opts.execution.components)) {
-    const filePath = path.join(opts.outputDir, `${opts.execution.envId}-${name}.txt`);
+  for (const [name, component] of pinnedComponents) {
+    const filePath = path.join(opts.outputDir, `${opts.execution.envId}-${name}.json`);
     await writeFile(
       filePath,
-      formatComponentRenderFile(opts.execution.envId, name, component),
+      `${JSON.stringify(formatComponentRenderData(opts.execution.envId, name, component), null, 2)}\n`,
     );
     componentFiles[name] = filePath;
   }
@@ -109,53 +112,24 @@ export async function writeRenderOutput(opts: {
   return { manifestPath, componentFiles, manifest };
 }
 
-export function formatComponentRenderFile(
+export function formatComponentRenderData(
   envId: string,
   componentName: string,
-  component: ExecutionComponent,
-): string {
-  if (component.disposition === "follow") {
-    return [
-      `Henosis render: ${componentName}`,
-      "Disposition: follow dev (not deployed in this environment)",
-      "Binding:",
-      ...formatBinding(component.binding).map((line) => `  ${line}`),
-      "",
-    ].join("\n");
-  }
-
-  return [
-    `Henosis render: ${componentName}`,
-    `Environment: ${envId} (namespace: ${component.namespace})`,
-    `Image: ${component.ref}@${component.digest}`,
-    "Binding:",
-    ...formatBinding(component.binding).map((line) => `  ${line}`),
-    "Resources:",
-    ...component.resources.flatMap((resource) =>
-      formatResource(resource).map((line) => `  ${line}`),
-    ),
-    "",
-  ].join("\n");
+  component: Extract<ExecutionComponent, { disposition: "pinned" }>,
+): RenderManifestComponent & { component: string; envId: string } {
+  return {
+    component: componentName,
+    envId,
+    ref: component.ref,
+    digest: component.digest,
+    outputs: component.outputs,
+    records: component.records,
+    artifacts: component.artifacts,
+  };
 }
 
-export function formatBinding(binding: MaterialisedBinding): string[] {
-  return flattenBinding(binding).map(([key, value]) => `${key}=${String(value)}`);
-}
-
-export function formatResource(resource: ResourceRecord): string[] {
-  switch (resource.kind) {
-    case "service":
-      return [
-        `service on port ${resource.port}`,
-        ...Object.entries(resource.env).map(([key, value]) => `  ${key}=${value}`),
-      ];
-    case "postgres":
-      return [
-        `postgres '${resource.name}'`,
-        `  url=${resource.url}`,
-        `  previews: ${resource.previews}`,
-      ];
-  }
+export function formatOutputs(outputs: JsonValue): string[] {
+  return flattenOutputs(outputs).map(([key, value]) => `${key}=${String(value)}`);
 }
 
 export function defaultPlatformRoot(): string {
@@ -163,69 +137,79 @@ export function defaultPlatformRoot(): string {
 }
 
 export function currentPlatformRef(platformRoot: string): string {
-  return execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: platformRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-}
-
-function manifestComponent(component: ExecutionComponent): RenderManifestComponent {
-  if (component.disposition === "follow") {
-    return {
-      disposition: "follow",
-      followsEnvId: "dev",
-      binding: component.binding,
-    };
+  const gitDir = path.join(platformRoot, ".git");
+  const head = readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
+  if (!head.startsWith("ref: ")) {
+    return head;
   }
 
-  return {
-    disposition: "render",
-    ref: component.ref,
-    digest: component.digest,
-    namespace: component.namespace,
-    binding: component.binding,
-    resources: component.resources,
-  };
+  const refName = head.slice("ref: ".length);
+  const looseRefPath = path.join(gitDir, refName);
+  if (existsSync(looseRefPath)) {
+    return readFileSync(looseRefPath, "utf8").trim();
+  }
+
+  const packedRefsPath = path.join(gitDir, "packed-refs");
+  const packedRefs = existsSync(packedRefsPath)
+    ? readFileSync(packedRefsPath, "utf8").split(/\r?\n/)
+    : [];
+  for (const line of packedRefs) {
+    if (line.startsWith("#") || line.length === 0) {
+      continue;
+    }
+    const [sha, packedRefName] = line.split(" ");
+    if (packedRefName === refName && sha !== undefined) {
+      return sha;
+    }
+  }
+
+  throw new Error(`Cannot resolve git HEAD ref ${refName}`);
 }
 
-function flattenBinding(
-  binding: MaterialisedBinding,
+function flattenOutputs(
+  value: JsonValue,
   prefix = "",
-): Array<[string, string | number | boolean]> {
+): Array<[string, string | number | boolean | null]> {
   if (
-    typeof binding === "string" ||
-    typeof binding === "number" ||
-    typeof binding === "boolean"
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    value === null
   ) {
-    return [[prefix, binding]];
+    return [[prefix, value]];
   }
 
-  return Object.entries(binding).flatMap(([key, value]) =>
-    flattenBinding(value, prefix.length === 0 ? key : `${prefix}.${key}`),
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      flattenOutputs(item, prefix.length === 0 ? String(index) : `${prefix}.${index}`),
+    );
+  }
+
+  return Object.entries(value).flatMap(([key, child]) =>
+    flattenOutputs(child, prefix.length === 0 ? key : `${prefix}.${key}`),
   );
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const lockfilePath = args[0];
-  if (lockfilePath === undefined || args.includes("--help")) {
-    console.error("Usage: henosis-render <lockfile.toml> [--output-dir <dir>]");
+  const manifestPath = args[0];
+  if (manifestPath === undefined || args.includes("--help")) {
+    console.error("Usage: henosis-render <manifest.toml> [--output-dir <dir>]");
     process.exitCode = 1;
     return;
   }
 
   const outputDir = optionValue(args, "--output-dir") ?? "rendered-output";
-  const lockfile = parseLockfile(await readFile(lockfilePath, "utf8"));
-  const devLockfilePath = path.join(path.dirname(lockfilePath), "dev.toml");
-  const devLockfile = parseLockfile(await readFile(devLockfilePath, "utf8"));
+  const manifest = parseManifest(await readFile(manifestPath, "utf8"));
+  const devManifestPath = path.join(path.dirname(manifestPath), "dev.toml");
+  const devManifest = parseManifest(await readFile(devManifestPath, "utf8"));
   const scratchDir = await mkdtemp(path.join(os.tmpdir(), "henosis-render-"));
   const platformRoot = defaultPlatformRoot();
   const platformRef = currentPlatformRef(platformRoot);
 
-  const output = await renderLockfile({
-    lockfile,
-    devLockfile,
+  const output = await renderManifest({
+    manifest,
+    devManifest,
     scratchDir,
     outputDir,
     platformRef,
@@ -233,13 +217,13 @@ async function main(): Promise<void> {
   });
 
   const renderedNames = Object.keys(output.componentFiles).join(", ");
-  const renderedPins = Object.entries(lockfile.components)
+  const renderedPins = Object.entries(manifest.components)
     .flatMap(([name, entry]) =>
       isPinned(entry) ? [`${name}@${entry.ref.slice(0, 7)}`] : [],
     )
     .join(", ");
   console.log(
-    `Rendered ${lockfile.environment.id} (${renderedNames}) to ${outputDir}`,
+    `Rendered ${manifest.environment.id} (${renderedNames}) to ${outputDir}`,
   );
   if (renderedPins.length > 0) {
     console.log(`Rendered pins: ${renderedPins}`);

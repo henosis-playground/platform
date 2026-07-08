@@ -20,7 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@henosis/sdk": "workspace:^",
+    "@henosis/core": "workspace:^",
     "smol-toml": "^1.3.4"
   },
   "devDependencies": {

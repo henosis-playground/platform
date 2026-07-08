@@ -1,11 +1,11 @@
 export {
   isPinned,
-  parseLockfile,
+  parseManifest,
+  type EnvironmentManifest,
   type FollowerEntry,
-  type Lockfile,
-  type LockfileEntry,
+  type ManifestEntry,
   type PinnedEntry,
-} from "./lockfile.js";
+} from "./manifest.js";
 export {
   assembleAndCheck,
   type AssemblyResult,
@@ -14,4 +14,12 @@ export {
   type LocalOverrides,
   type ResolvedComponent,
 } from "./assembler.js";
-export { type RenderOutput } from "./render.js";
+export {
+  executeComponents,
+  type ExecutionComponent,
+  type ExecutionResult,
+  type FollowExecutionComponent,
+  type PinnedExecutionComponent,
+  type PipelineFailure,
+} from "./execute.js";
+export { renderManifest, type RenderOutput } from "./render.js";

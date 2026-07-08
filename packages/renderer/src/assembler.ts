@@ -1,7 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isPinned, type Lockfile, type PinnedEntry } from "./lockfile.js";
+import {
+  isPinned,
+  type EnvironmentManifest,
+  type PinnedEntry,
+} from "./manifest.js";
 
 export type LocalOverrides = Record<string, string>;
 
@@ -10,7 +15,7 @@ export type AssemblyResult = {
   compileOutput?: string;
 };
 
-export type ComponentDisposition = "render" | "follow";
+export type ComponentDisposition = "pinned" | "follow";
 
 export type ResolvedComponent = {
   name: string;
@@ -26,16 +31,16 @@ export type ResolvedComponent = {
 export type ComponentDependencyGraph = Record<string, string[]>;
 
 export async function assembleAndCheck(opts: {
-  lockfile: Lockfile;
-  devLockfile: Lockfile;
+  manifest: EnvironmentManifest;
+  devManifest: EnvironmentManifest;
   scratchDir: string;
   platformRef: string;
   localOverrides?: LocalOverrides;
 }): Promise<AssemblyResult> {
   try {
-    const resolved = resolveLockfileComponents({
-      lockfile: opts.lockfile,
-      devLockfile: opts.devLockfile,
+    const resolved = resolveManifestComponents({
+      manifest: opts.manifest,
+      devManifest: opts.devManifest,
     });
 
     await writeScratchWorkspace({
@@ -45,7 +50,7 @@ export async function assembleAndCheck(opts: {
       localOverrides: opts.localOverrides ?? {},
     });
 
-    execFileSync(
+    await runCommand(
       "pnpm",
       [
         "install",
@@ -57,23 +62,20 @@ export async function assembleAndCheck(opts: {
         "--store-dir",
         path.join(opts.scratchDir, ".pnpm-store"),
       ],
+      opts.scratchDir,
       {
-        cwd: opts.scratchDir,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          CI: "true",
-          npm_config_confirm_modules_purge: "false",
-        },
-        stdio: "pipe",
+        ...process.env,
+        CI: "true",
+        npm_config_confirm_modules_purge: "false",
       },
     );
 
-    execFileSync(tscBin(opts.scratchDir), ["--noEmit", "--pretty", "false"], {
-      cwd: path.join(opts.scratchDir, "packages", "gate-workspace"),
-      encoding: "utf8",
-      stdio: "pipe",
-    });
+    await runCommand(
+      tscBin(opts.scratchDir),
+      ["--noEmit", "--pretty", "false"],
+      path.join(opts.scratchDir, "packages", "gate-workspace"),
+      process.env,
+    );
 
     return { ok: true };
   } catch (error) {
@@ -84,24 +86,102 @@ export async function assembleAndCheck(opts: {
   }
 }
 
-export function resolveLockfileComponents(opts: {
-  lockfile: Lockfile;
-  devLockfile: Lockfile;
+async function runCommand(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const capture = commandCaptureFiles(cwd);
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: ["ignore", capture.stdoutFd, capture.stderrFd],
+    });
+
+    child.on("error", (error) => {
+      const output = readCommandCapture(capture);
+      reject(new CommandError(error.message, output.stdout, output.stderr));
+    });
+    child.on("close", (code) => {
+      const output = readCommandCapture(capture);
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(
+        new CommandError(
+          `${command} exited with status ${code ?? "unknown"}`,
+          output.stdout,
+          output.stderr,
+        ),
+      );
+    });
+  });
+}
+
+type CommandCapture = {
+  stdoutPath: string;
+  stderrPath: string;
+  stdoutFd: number;
+  stderrFd: number;
+};
+
+function commandCaptureFiles(cwd: string): CommandCapture {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const stdoutPath = path.join(cwd, `.henosis-command-${token}.stdout`);
+  const stderrPath = path.join(cwd, `.henosis-command-${token}.stderr`);
+  return {
+    stdoutPath,
+    stderrPath,
+    stdoutFd: openSync(stdoutPath, "w"),
+    stderrFd: openSync(stderrPath, "w"),
+  };
+}
+
+function readCommandCapture(capture: CommandCapture): {
+  stdout: string;
+  stderr: string;
+} {
+  closeSync(capture.stdoutFd);
+  closeSync(capture.stderrFd);
+  const stdout = readFileSync(capture.stdoutPath, "utf8");
+  const stderr = readFileSync(capture.stderrPath, "utf8");
+  unlinkSync(capture.stdoutPath);
+  unlinkSync(capture.stderrPath);
+  return { stdout, stderr };
+}
+
+class CommandError extends Error {
+  constructor(
+    message: string,
+    readonly stdout: string,
+    readonly stderr: string,
+  ) {
+    super(message);
+  }
+}
+
+export function resolveManifestComponents(opts: {
+  manifest: EnvironmentManifest;
+  devManifest: EnvironmentManifest;
 }): ResolvedComponent[] {
-  return Object.entries(opts.lockfile.components).map(([name, entry]) => {
+  return Object.entries(opts.manifest.components).map(([name, entry]) => {
     if (isPinned(entry)) {
       return resolvedComponentFromPinned(
         name,
         entry,
-        "render",
-        opts.lockfile.environment.id,
+        "pinned",
+        opts.manifest.environment.id,
       );
     }
 
-    const devEntry = opts.devLockfile.components[name];
+    const devEntry = opts.devManifest.components[name];
     if (devEntry === undefined || !isPinned(devEntry)) {
       throw new Error(
-        `Cannot resolve follower component "${name}": dev lockfile must contain a pinned entry`,
+        `Cannot resolve follower component "${name}": dev manifest must contain a pinned entry`,
       );
     }
 
@@ -135,7 +215,6 @@ export async function readComponentDependencyGraph(
     graph[name] = Object.keys(dependencies)
       .filter((dependencyName) => dependencyName.startsWith("@henosis/"))
       .map((dependencyName) => dependencyName.slice("@henosis/".length))
-      .filter((dependencyName) => dependencyName !== "sdk")
       .filter((dependencyName) => componentNameSet.has(dependencyName))
       .sort();
   }
@@ -210,7 +289,16 @@ async function writeScratchWorkspace(opts: {
   });
 
   const overrides: Record<string, string> = {
-    "@henosis/sdk": `github:henosis-playground/platform#${opts.platformRef}&path:packages/sdk`,
+    "@henosis/core": packageOverride(
+      opts.localOverrides,
+      "core",
+      `github:henosis-playground/platform#${opts.platformRef}&path:packages/core`,
+    ),
+    "@henosis/platform-mock": packageOverride(
+      opts.localOverrides,
+      "platform-mock",
+      `github:henosis-playground/platform#${opts.platformRef}&path:packages/platform-mock`,
+    ),
   };
 
   for (const component of opts.components) {
@@ -224,13 +312,18 @@ async function writeScratchWorkspace(opts: {
   const dependencies = Object.fromEntries(
     opts.components.map((component) => [component.packageName, "*"]),
   );
+  const typescriptDependency = localDependency(
+    opts.localOverrides,
+    "typescript",
+    "5.9.3",
+  );
 
   await writeJson(path.join(scratchDir, "package.json"), {
     name: "henosis-gate-workspace-root",
     private: true,
     packageManager: "pnpm@11.3.0",
     devDependencies: {
-      typescript: "5.9.3",
+      typescript: typescriptDependency,
     },
     pnpm: { overrides },
   });
@@ -257,7 +350,7 @@ async function writeScratchWorkspace(opts: {
       type: "module",
       dependencies,
       devDependencies: {
-        typescript: "5.9.3",
+        typescript: typescriptDependency,
       },
     },
   );
@@ -283,6 +376,29 @@ async function writeScratchWorkspace(opts: {
       .map((component) => `import "${component.packageName}";`)
       .join("\n")}\n`,
   );
+}
+
+function packageOverride(
+  localOverrides: LocalOverrides,
+  shortName: string,
+  fallback: string,
+): string {
+  const scopedName = `@henosis/${shortName}`;
+  const localOverride = localOverrides[shortName] ?? localOverrides[scopedName];
+  return localOverride === undefined
+    ? fallback
+    : `file:${path.resolve(localOverride)}`;
+}
+
+function localDependency(
+  localOverrides: LocalOverrides,
+  name: string,
+  fallback: string,
+): string {
+  const localOverride = localOverrides[name];
+  return localOverride === undefined
+    ? fallback
+    : `file:${path.resolve(localOverride)}`;
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
@@ -326,6 +442,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function execErrorOutput(error: unknown): string {
+  if (error instanceof CommandError) {
+    const output = [error.stdout, error.stderr]
+      .filter((part) => part.length > 0)
+      .join("\n");
+    return output.length > 0 ? output : error.message;
+  }
+
   const stdout = stringErrorProperty(error, "stdout");
   const stderr = stringErrorProperty(error, "stderr");
   const output = [stdout, stderr].filter((part) => part.length > 0).join("\n");
