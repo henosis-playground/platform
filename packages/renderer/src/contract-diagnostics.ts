@@ -195,9 +195,6 @@ async function extractGitOutputSchema(opts: {
         dependencies: {
           [`@henosis/${opts.component}`]: "*",
         },
-        devDependencies: {
-          tsx: "^4.23.0",
-        },
         pnpm: { overrides },
       },
       null,
