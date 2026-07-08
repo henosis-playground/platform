@@ -15,8 +15,13 @@ describe("parseCompileFailures", () => {
       }),
     ).toEqual([
       {
-        component: "service-b",
-        consumerOf: "service-a",
+        consumer: "service-b",
+        producer: "service-a",
+        pinnedSha: null,
+        resolvedSha: null,
+        outputsSchemaAtPinned: null,
+        outputsSchemaAtResolved: null,
+        consumedPaths: ["api"],
         kind: "compile",
         message: "service-b consumes service-a.api which no longer exists",
         excerpt:

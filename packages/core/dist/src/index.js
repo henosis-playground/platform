@@ -14,6 +14,9 @@ export const h = {
     url() {
         return makeLeafSchema("url");
     },
+    number() {
+        return makeLeafSchema("number");
+    },
 };
 export function envName(env) {
     return env.kind === "preview" ? env.id : env.kind;
@@ -122,6 +125,10 @@ function validateAgainstSchema(schema, value, pathParts, allowRefs) {
             return typeof value === "string" && isUrl(value)
                 ? []
                 : [issue(pathParts, "url", actualType(value))];
+        case "number":
+            return typeof value === "number"
+                ? []
+                : [issue(pathParts, "number", actualType(value))];
         case "object":
             return validateObject(data.shape ?? {}, value, pathParts, allowRefs);
     }
@@ -185,7 +192,7 @@ function isSchemaData(value) {
     if (value.kind === "object") {
         return value.shape === undefined || isRecord(value.shape);
     }
-    return value.kind === "string" || value.kind === "url";
+    return value.kind === "string" || value.kind === "url" || value.kind === "number";
 }
 function isComponentDefinition(value) {
     return (isRecord(value) &&

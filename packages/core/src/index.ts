@@ -72,6 +72,10 @@ export type UrlSchema = Schema<string> & {
   readonly kind: "url";
 };
 
+export type NumberSchema = Schema<number> & {
+  readonly kind: "number";
+};
+
 export type SchemaShape = {
   readonly [key: string]: Schema<unknown>;
 };
@@ -154,6 +158,9 @@ export const h = {
   },
   url(): UrlSchema {
     return makeLeafSchema("url") as UrlSchema;
+  },
+  number(): NumberSchema {
+    return makeLeafSchema("number") as NumberSchema;
   },
 };
 
@@ -251,7 +258,7 @@ export function refOutputPath(value: Ref<unknown>): readonly string[] {
   return value[refSymbol].path;
 }
 
-type LeafKind = "string" | "url";
+type LeafKind = "string" | "url" | "number";
 type SchemaKind = LeafKind | "object";
 
 type SchemaData = {
@@ -264,7 +271,7 @@ type OutputRefData = {
   readonly path: readonly string[];
 };
 
-function makeLeafSchema(kind: LeafKind): StringSchema | UrlSchema {
+function makeLeafSchema(kind: LeafKind): StringSchema | UrlSchema | NumberSchema {
   return Object.freeze({
     kind,
     [schemaSymbol]: { kind },
@@ -329,6 +336,10 @@ function validateAgainstSchema(
       return typeof value === "string" && isUrl(value)
         ? []
         : [issue(pathParts, "url", actualType(value))];
+    case "number":
+      return typeof value === "number"
+        ? []
+        : [issue(pathParts, "number", actualType(value))];
     case "object":
       return validateObject(data.shape ?? {}, value, pathParts, allowRefs);
   }
@@ -425,7 +436,7 @@ function isSchemaData(value: unknown): value is SchemaData {
   if (value.kind === "object") {
     return value.shape === undefined || isRecord(value.shape);
   }
-  return value.kind === "string" || value.kind === "url";
+  return value.kind === "string" || value.kind === "url" || value.kind === "number";
 }
 
 function isComponentDefinition(

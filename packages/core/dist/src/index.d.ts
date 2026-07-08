@@ -49,6 +49,9 @@ export type StringSchema = Schema<string> & {
 export type UrlSchema = Schema<string> & {
     readonly kind: "url";
 };
+export type NumberSchema = Schema<number> & {
+    readonly kind: "number";
+};
 export type SchemaShape = {
     readonly [key: string]: Schema<unknown>;
 };
@@ -102,6 +105,7 @@ export declare const h: {
     object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
     string(): StringSchema;
     url(): UrlSchema;
+    number(): NumberSchema;
 };
 export declare function envName(env: Env): string;
 export declare function envFromName(name: string): Env;
@@ -114,7 +118,7 @@ export declare function validateSchema<S extends Schema<unknown>>(schema: S, val
 export declare function isRef(value: unknown): value is Ref<unknown>;
 export declare function refSourceComponent(value: Ref<unknown>): string | undefined;
 export declare function refOutputPath(value: Ref<unknown>): readonly string[];
-type LeafKind = "string" | "url";
+type LeafKind = "string" | "url" | "number";
 type SchemaKind = LeafKind | "object";
 type SchemaData = {
     readonly kind: SchemaKind;

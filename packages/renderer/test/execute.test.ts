@@ -264,6 +264,77 @@ describe("executeComponents", () => {
       },
     });
   });
+
+  it("reports the consumed producer path when a surviving output changes type", async () => {
+    const scratchDir = await makeScratchWorkspace();
+    const platformRoot = platformRepoRoot();
+
+    await writeComponent(
+      scratchDir,
+      "service-a",
+      {
+        "@henosis/platform-mock": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+
+        export default defineComponent({
+          outputs: h.object({ port: h.string() }),
+          build: () => ({ port: "5432" }),
+        });
+      `,
+    );
+
+    await writeComponent(
+      scratchDir,
+      "service-b",
+      {
+        "@henosis/platform-mock": "*",
+        "@henosis/service-a": "*",
+      },
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+        import serviceA from "@henosis/service-a";
+
+        export default defineComponent({
+          outputs: h.object({ upstreamPort: h.number() }),
+          build: () => ({ upstreamPort: serviceA.port }),
+        });
+      `,
+    );
+
+    const manifest = parseManifest(`
+      [environment]
+      id = "dev"
+
+      [components.service-a]
+      repo = "henosis-playground/service-a"
+      ref = "service-a-dev"
+      digest = "sha256:service-a-dev"
+
+      [components.service-b]
+      repo = "henosis-playground/service-b"
+      ref = "service-b-dev"
+      digest = "sha256:service-b-dev"
+    `);
+
+    await expect(
+      executeComponents({
+        manifest,
+        devManifest: manifest,
+        scratchDir,
+        platformRoot,
+      }),
+    ).rejects.toMatchObject({
+      failure: {
+        component: "service-b",
+        consumerOf: "service-a",
+        consumedPaths: ["port"],
+        kind: "validate",
+        message: "service-b.upstreamPort expected number, got string",
+      },
+    });
+  });
 });
 
 async function makeScratchWorkspace(): Promise<string> {

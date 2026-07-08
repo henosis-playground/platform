@@ -6,10 +6,16 @@ import type {
   PipelineFailure,
 } from "./execute.js";
 import { formatOutputs } from "./render.js";
+import type { SchemaData } from "./schema-data.js";
 
 export type GateFailure = {
-  component: string;
-  consumerOf?: string;
+  consumer: string;
+  producer: string;
+  pinnedSha: string | null;
+  resolvedSha: string | null;
+  outputsSchemaAtPinned: SchemaData | null;
+  outputsSchemaAtResolved: SchemaData | null;
+  consumedPaths: string[];
   kind: "compile" | "render" | "validate" | "resolve";
   message: string;
   excerpt: string;
@@ -40,13 +46,14 @@ export function parseCompileFailures(
     const consumer = component ?? firstConsumerWithDependency(graph) ?? "unknown";
     const producer = firstProducerForConsumer(graph, consumer) ?? "unknown";
     const message = `${consumer} consumes ${producer}.${field} which no longer exists`;
-    failures.push({
-      component: consumer,
-      consumerOf: producer,
+    failures.push(contractFailure({
+      consumer,
+      producer,
       kind: "compile",
       message,
       excerpt: excerptFrom(lines, index),
-    });
+      consumedPaths: [field],
+    }));
   }
 
   if (failures.length > 0) {
@@ -54,34 +61,37 @@ export function parseCompileFailures(
   }
 
   return [
-    {
-      component: "workspace",
-      consumerOf: "unknown",
+    contractFailure({
+      consumer: "workspace",
+      producer: "unknown",
       kind: "compile",
       message: "TypeScript compile failed",
       excerpt: compileOutput.trim(),
-    },
+      consumedPaths: [],
+    }),
   ];
 }
 
 export function pipelineFailure(failure: PipelineFailure): GateFailure {
-  return {
-    component: failure.component,
-    consumerOf: failure.consumerOf,
+  return contractFailure({
+    consumer: failure.component,
+    producer: failure.consumerOf ?? "unknown",
     kind: failure.kind,
     message: failure.message,
     excerpt: failure.excerpt,
-  };
+    consumedPaths: failure.consumedPaths ?? [],
+  });
 }
 
 export function renderFailure(message: string, excerpt = message): GateFailure {
-  return {
-    component: "renderer",
-    consumerOf: "unknown",
+  return contractFailure({
+    consumer: "renderer",
+    producer: "unknown",
     kind: "render",
     message,
     excerpt,
-  };
+    consumedPaths: [],
+  });
 }
 
 export function formatGateText(opts: {
@@ -133,6 +143,28 @@ export function formatGateText(opts: {
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+function contractFailure(opts: {
+  consumer: string;
+  producer: string;
+  kind: GateFailure["kind"];
+  message: string;
+  excerpt: string;
+  consumedPaths: string[];
+}): GateFailure {
+  return {
+    consumer: opts.consumer,
+    producer: opts.producer,
+    pinnedSha: null,
+    resolvedSha: null,
+    outputsSchemaAtPinned: null,
+    outputsSchemaAtResolved: null,
+    consumedPaths: opts.consumedPaths,
+    kind: opts.kind,
+    message: opts.message,
+    excerpt: opts.excerpt,
+  };
 }
 
 function formatComponentSummary(component: ResolvedComponent): string {

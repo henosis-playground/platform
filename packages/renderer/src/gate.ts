@@ -8,6 +8,7 @@ import {
   type LocalOverrides,
 } from "./assembler.js";
 import { executeComponents, ExecutionPipelineError } from "./execute.js";
+import { enrichGateFailures } from "./contract-diagnostics.js";
 import {
   formatGateText,
   parseCompileFailures,
@@ -56,7 +57,12 @@ async function runGate(opts: GateCliOptions): Promise<{
     }
 
     const compileOutput = assembly.compileOutput ?? "Workspace assembly failed";
-    const failures = parseCompileFailures(compileOutput, graph);
+    const failures = await enrichGateFailures(parseCompileFailures(compileOutput, graph), {
+      scratchDir: opts.scratchDir,
+      components,
+      platformRef,
+      localOverrides: opts.localOverrides,
+    });
     const report: GateReport = { ok: false, failures };
     return {
       report,
@@ -95,14 +101,20 @@ async function runGate(opts: GateCliOptions): Promise<{
       error instanceof ExecutionPipelineError
         ? pipelineFailure(error.failure)
         : renderFailure(error instanceof Error ? error.message : String(error));
-    const report: GateReport = { ok: false, failures: [failure] };
+    const failures = await enrichGateFailures([failure], {
+      scratchDir: opts.scratchDir,
+      components,
+      platformRef,
+      localOverrides: opts.localOverrides,
+    });
+    const report: GateReport = { ok: false, failures };
     return {
       report,
       text: formatGateText({
         ok: false,
         environment: manifest.environment,
         components,
-        failures: [failure],
+        failures,
       }),
     };
   }

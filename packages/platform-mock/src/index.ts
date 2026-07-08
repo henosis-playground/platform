@@ -10,6 +10,7 @@ export type {
   ImageRef,
   InferSchema,
   JsonValue,
+  NumberSchema,
   ObjectSchema,
   RecordWriter,
   Ref,

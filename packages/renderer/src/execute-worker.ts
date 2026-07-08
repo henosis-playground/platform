@@ -49,6 +49,7 @@ type WorkerSuccessComponent = {
 type WorkerFailure = {
   component: string;
   consumerOf?: string;
+  consumedPaths?: string[];
   kind: "render" | "validate" | "resolve";
   message: string;
   excerpt: string;
@@ -307,6 +308,7 @@ function resolveRef(
     return failure({
       component: consumer,
       consumerOf: source,
+      consumedPaths: [outputName],
       kind: "resolve",
       message,
     });
@@ -323,6 +325,7 @@ function resolveRef(
     return failure({
       component: consumer,
       consumerOf: source,
+      consumedPaths: [outputName],
       kind: "resolve",
       message,
     });
@@ -393,8 +396,14 @@ function validationFailure(
 
   const outputPath = issue.path.join(".");
   const message = `${component}.${outputPath} expected ${issue.expected}, got ${issue.actual}`;
+  const sourceRef = refAtPath(evaluated.get(component)?.outputs, issue.path);
+  const source = sourceRef === undefined ? undefined : refSourceComponent(sourceRef);
+  const consumedPath =
+    sourceRef === undefined ? undefined : refOutputPath(sourceRef).join(".");
   return failure({
     component,
+    consumerOf: source,
+    consumedPaths: consumedPath === undefined ? undefined : [consumedPath],
     kind: "validate",
     message,
   });
@@ -403,6 +412,7 @@ function validationFailure(
 function failure(opts: {
   component: string;
   consumerOf?: string;
+  consumedPaths?: string[];
   kind: "render" | "validate" | "resolve";
   message: string;
   excerpt?: string;
@@ -412,11 +422,26 @@ function failure(opts: {
     failure: {
       component: opts.component,
       consumerOf: opts.consumerOf,
+      consumedPaths: opts.consumedPaths,
       kind: opts.kind,
       message: opts.message,
       excerpt: opts.excerpt ?? opts.message,
     },
   };
+}
+
+function refAtPath(
+  value: BuildValue<unknown> | undefined,
+  pathParts: readonly string[],
+): Ref<unknown> | undefined {
+  let current: BuildValue<unknown> | undefined = value;
+  for (const part of pathParts) {
+    if (!isRecord(current) || !(part in current)) {
+      return undefined;
+    }
+    current = current[part] as BuildValue<unknown>;
+  }
+  return isRef(current) ? current : undefined;
 }
 
 function getPath(value: JsonValue, pathParts: readonly string[]): JsonValue | undefined {

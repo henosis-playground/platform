@@ -23,6 +23,7 @@ export type FailureKind = "compile" | "render" | "validate" | "resolve";
 export type PipelineFailure = {
   component: string;
   consumerOf?: string;
+  consumedPaths?: string[];
   kind: FailureKind;
   message: string;
   excerpt: string;

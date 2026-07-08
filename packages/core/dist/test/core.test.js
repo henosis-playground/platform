@@ -104,6 +104,9 @@ describe("evaluation and validation", () => {
         expect(validateSchema(schema, { upstream: "not a url" })).toEqual([
             { path: ["upstream"], expected: "url", actual: "string" },
         ]);
+        expect(validateSchema(h.object({ port: h.number() }), { port: "5432" })).toEqual([
+            { path: ["port"], expected: "number", actual: "string" },
+        ]);
     });
 });
 //# sourceMappingURL=core.test.js.map
