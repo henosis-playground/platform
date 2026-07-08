@@ -31,12 +31,15 @@ export async function enrichGateFailures(
       }
 
       const producer = components.get(failure.producer);
+      const consumer = components.get(failure.consumer);
       const resolvedSha = producer?.ref ?? null;
-      const pinnedSha = await readPinnedProducerSha(
-        opts.scratchDir,
-        failure.consumer,
-        failure.producer,
-      );
+      const pinnedSha = await readPinnedProducerSha({
+        scratchDir: opts.scratchDir,
+        consumer: failure.consumer,
+        producer: failure.producer,
+        consumerRepo: consumer?.repo,
+        consumerRef: consumer?.ref,
+      });
       const consumedPaths = uniqueSorted([
         ...failure.consumedPaths,
         ...(await inferConsumedPaths(
@@ -250,24 +253,41 @@ async function extractGitOutputSchema(opts: {
   );
 }
 
-async function readPinnedProducerSha(
-  scratchDir: string,
-  consumer: string,
-  producer: string,
-): Promise<string | null> {
+async function readPinnedProducerSha(opts: {
+  scratchDir: string;
+  consumer: string;
+  producer: string;
+  consumerRepo?: string;
+  consumerRef?: string;
+}): Promise<string | null> {
   const lockPath = path.join(
-    scratchDir,
+    opts.scratchDir,
     "node_modules",
     "@henosis",
-    consumer,
+    opts.consumer,
     "pnpm-lock.yaml",
   );
 
   try {
-    return producerShaFromPnpmLock(await readFile(lockPath, "utf8"), producer);
+    return producerShaFromPnpmLock(await readFile(lockPath, "utf8"), opts.producer);
   } catch {
+    // pnpm git path dependencies do not reliably expose lockfiles in the
+    // installed package; fall back to the consumer repo/ref that the manifest
+    // resolved for this gate.
+  }
+
+  if (opts.consumerRepo === undefined || opts.consumerRef === undefined) {
     return null;
   }
+
+  const lockfile = await readGitHubFile(
+    opts.consumerRepo,
+    opts.consumerRef,
+    "henosis/pnpm-lock.yaml",
+  );
+  return lockfile === null
+    ? null
+    : producerShaFromPnpmLock(lockfile, opts.producer);
 }
 
 async function inferConsumedPaths(
@@ -479,6 +499,28 @@ async function runCommand(
       );
     });
   });
+}
+
+async function readGitHubFile(
+  repo: string,
+  ref: string,
+  filePath: string,
+): Promise<string | null> {
+  const [owner, name, extra] = repo.split("/");
+  if (
+    owner === undefined ||
+    name === undefined ||
+    extra !== undefined ||
+    owner.length === 0 ||
+    name.length === 0
+  ) {
+    return null;
+  }
+
+  const response = await fetch(
+    `https://raw.githubusercontent.com/${owner}/${name}/${encodeURIComponent(ref)}/${filePath}`,
+  );
+  return response.ok ? response.text() : null;
 }
 
 function schemaWorkerPath(): string {

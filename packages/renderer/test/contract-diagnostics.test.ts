@@ -2,9 +2,10 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   consumedSchemaChange,
+  enrichGateFailures,
   extractInstalledOutputSchema,
   producerShaFromPnpmLock,
 } from "../src/contract-diagnostics.js";
@@ -12,6 +13,7 @@ import {
 const scratchDirs: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     scratchDirs.splice(0).map((scratchDir) =>
       rm(scratchDir, { recursive: true, force: true }),
@@ -85,6 +87,60 @@ importers:
 
     expect(consumedSchemaChange(pinned, resolved, "api")).toBe("removed");
     expect(consumedSchemaChange(pinned, resolved, "port")).toBe("type-changed");
+  });
+
+  it("falls back to the consumer repo lockfile at the gated ref", async () => {
+    const scratchDir = await makeScratchWorkspace();
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(`
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      '@henosis/service-a':
+        specifier: github:henosis-playground/service-a#path:henosis
+        version: https://codeload.github.com/henosis-playground/service-a/tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#path:henosis
+`),
+    );
+
+    const [failure] = await enrichGateFailures(
+      [
+        {
+          consumer: "service-b",
+          producer: "service-a",
+          pinnedSha: null,
+          resolvedSha: null,
+          outputsSchemaAtPinned: null,
+          outputsSchemaAtResolved: null,
+          consumedPaths: ["api"],
+          kind: "compile",
+          message: "service-b consumes service-a.api which no longer exists",
+          excerpt: "Property 'api' does not exist on type",
+        },
+      ],
+      {
+        scratchDir,
+        components: [
+          {
+            name: "service-b",
+            packageName: "@henosis/service-b",
+            repo: "henosis-playground/service-b",
+            ref: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            digest: "sha256:service-b",
+            disposition: "pinned",
+            env: { kind: "dev" },
+          },
+        ],
+        platformRef: "cccccccccccccccccccccccccccccccccccccccc",
+        localOverrides: {},
+      },
+    );
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://raw.githubusercontent.com/henosis-playground/service-b/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/henosis/pnpm-lock.yaml",
+    );
+    expect(failure?.pinnedSha).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 });
 
