@@ -2,12 +2,17 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  assembleAndCheck,
+  assembleWorkspace,
+  checkWorkspaceTypes,
   readComponentDependencyGraph,
   resolveManifestComponents,
   type LocalOverrides,
 } from "./assembler.js";
-import { executeComponents, ExecutionPipelineError } from "./execute.js";
+import {
+  executeComponents,
+  ExecutionPipelineError,
+  validateComponentBuilds,
+} from "./execute.js";
 import { enrichGateFailures } from "./contract-diagnostics.js";
 import {
   formatGateText,
@@ -27,7 +32,7 @@ type GateCliOptions = {
   localOverrides: LocalOverrides;
 };
 
-async function runGate(opts: GateCliOptions): Promise<{
+export async function runGate(opts: GateCliOptions): Promise<{
   report: GateReport;
   text: string;
 }> {
@@ -37,7 +42,7 @@ async function runGate(opts: GateCliOptions): Promise<{
   const platformRef = currentPlatformRef(platformRoot);
   const components = resolveManifestComponents({ manifest, devManifest });
 
-  const assembly = await assembleAndCheck({
+  const assembly = await assembleWorkspace({
     manifest,
     devManifest,
     scratchDir: opts.scratchDir,
@@ -57,6 +62,63 @@ async function runGate(opts: GateCliOptions): Promise<{
     }
 
     const compileOutput = assembly.compileOutput ?? "Workspace assembly failed";
+    const failures = await enrichGateFailures(parseCompileFailures(compileOutput, graph), {
+      scratchDir: opts.scratchDir,
+      components,
+      platformRef,
+      localOverrides: opts.localOverrides,
+    });
+    const report: GateReport = { ok: false, failures };
+    return {
+      report,
+      text: formatGateText({
+        ok: false,
+        environment: manifest.environment,
+        components,
+        failures,
+        compileOutput,
+      }),
+    };
+  }
+
+  try {
+    await validateComponentBuilds({
+      manifest,
+      devManifest,
+      scratchDir: opts.scratchDir,
+      platformRoot,
+      localOverrides: opts.localOverrides,
+    });
+  } catch (error) {
+    const failure =
+      error instanceof ExecutionPipelineError
+        ? pipelineFailure(error.failure)
+        : renderFailure(error instanceof Error ? error.message : String(error));
+    const failures = await enrichGateFailures([failure], {
+      scratchDir: opts.scratchDir,
+      components,
+      platformRef,
+      localOverrides: opts.localOverrides,
+    });
+    const report: GateReport = { ok: false, failures };
+    return {
+      report,
+      text: formatGateText({
+        ok: false,
+        environment: manifest.environment,
+        components,
+        failures,
+      }),
+    };
+  }
+
+  const typeCheck = await checkWorkspaceTypes({ scratchDir: opts.scratchDir });
+  if (!typeCheck.ok) {
+    const graph = await readComponentDependencyGraph(
+      opts.scratchDir,
+      components.map((component) => component.name),
+    );
+    const compileOutput = typeCheck.compileOutput ?? "Workspace typecheck failed";
     const failures = await enrichGateFailures(parseCompileFailures(compileOutput, graph), {
       scratchDir: opts.scratchDir,
       components,

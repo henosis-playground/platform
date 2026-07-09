@@ -31,6 +31,7 @@ type WorkerComponentInfo = {
 
 type WorkerInput = {
   components: Record<string, WorkerComponentInfo>;
+  mode: "execute" | "validate";
   order: string[];
   scratchDir: string;
   outputPath?: string;
@@ -116,6 +117,10 @@ async function run(): Promise<WorkerOutput> {
     if (!result.ok) {
       return result;
     }
+  }
+
+  if (input.mode === "validate") {
+    return { ok: true, components: {} };
   }
 
   const components: Record<string, WorkerSuccessComponent> = {};
@@ -402,8 +407,13 @@ function validationFailure(
     sourceRef === undefined ? undefined : refOutputPath(sourceRef).join(".");
   return failure({
     component,
-    consumerOf: source,
-    consumedPaths: consumedPath === undefined ? undefined : [consumedPath],
+    consumerOf: source ?? component,
+    consumedPaths:
+      consumedPath === undefined
+        ? outputPath.length > 0
+          ? [outputPath]
+          : undefined
+        : [consumedPath],
     kind: "validate",
     message,
   });
@@ -487,6 +497,7 @@ function parseInput(source: string): WorkerInput {
 
   return {
     scratchDir: parsed.scratchDir,
+    mode: parsed.mode === "validate" ? "validate" : "execute",
     outputPath:
       typeof parsed.outputPath === "string" ? parsed.outputPath : undefined,
     components,

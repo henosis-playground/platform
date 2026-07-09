@@ -31,7 +31,7 @@ export type ResolvedComponent = {
 
 export type ComponentDependencyGraph = Record<string, string[]>;
 
-export async function assembleAndCheck(opts: {
+export async function assembleWorkspace(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
   scratchDir: string;
@@ -71,6 +71,19 @@ export async function assembleAndCheck(opts: {
       },
     );
 
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      compileOutput: execErrorOutput(error),
+    };
+  }
+}
+
+export async function checkWorkspaceTypes(opts: {
+  scratchDir: string;
+}): Promise<AssemblyResult> {
+  try {
     await runCommand(
       tscBin(opts.scratchDir),
       ["--noEmit", "--pretty", "false"],
@@ -85,6 +98,20 @@ export async function assembleAndCheck(opts: {
       compileOutput: execErrorOutput(error),
     };
   }
+}
+
+export async function assembleAndCheck(opts: {
+  manifest: EnvironmentManifest;
+  devManifest: EnvironmentManifest;
+  scratchDir: string;
+  platformRef: string;
+  localOverrides?: LocalOverrides;
+}): Promise<AssemblyResult> {
+  const assembly = await assembleWorkspace(opts);
+  if (!assembly.ok) {
+    return assembly;
+  }
+  return checkWorkspaceTypes({ scratchDir: opts.scratchDir });
 }
 
 async function runCommand(

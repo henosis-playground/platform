@@ -72,6 +72,7 @@ type WorkerComponentInfo = {
 
 type WorkerInput = {
   components: Record<string, WorkerComponentInfo>;
+  mode?: "execute" | "validate";
   order: string[];
   scratchDir: string;
   outputPath: string;
@@ -97,6 +98,42 @@ type WorkerOutput =
       failure: PipelineFailure;
     };
 
+export async function validateComponentBuilds(opts: {
+  manifest: EnvironmentManifest;
+  devManifest: EnvironmentManifest;
+  scratchDir: string;
+  platformRoot: string;
+  localOverrides?: LocalOverrides;
+}): Promise<void> {
+  void opts.platformRoot;
+  void opts.localOverrides;
+
+  const resolved = resolveManifestComponents({
+    manifest: opts.manifest,
+    devManifest: opts.devManifest,
+  });
+  const componentNames = resolved.map((component) => component.name);
+  const graph = await readComponentDependencyGraph(opts.scratchDir, componentNames);
+  const order = topologicalOrder(graph, componentNames);
+  const inputPath = path.join(opts.scratchDir, ".henosis-validate-input.json");
+  const outputPath = path.join(opts.scratchDir, ".henosis-validate-output.json");
+
+  const workerInput: WorkerInput = {
+    scratchDir: opts.scratchDir,
+    outputPath,
+    mode: "validate",
+    order,
+    components: workerComponents(resolved),
+  };
+
+  await writeFile(inputPath, `${JSON.stringify(workerInput)}\n`);
+  const workerOutput = await runWorker(inputPath, outputPath);
+
+  if (!workerOutput.ok) {
+    throw new ExecutionPipelineError(workerOutput.failure);
+  }
+}
+
 export async function executeComponents(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
@@ -121,17 +158,7 @@ export async function executeComponents(opts: {
     scratchDir: opts.scratchDir,
     outputPath,
     order,
-    components: Object.fromEntries(
-      resolved.map((component) => [
-        component.name,
-        {
-          disposition: component.disposition,
-          env: component.env,
-          ref: component.ref,
-          digest: component.digest,
-        },
-      ]),
-    ),
+    components: workerComponents(resolved),
   };
 
   await writeFile(inputPath, `${JSON.stringify(workerInput)}\n`);
@@ -184,6 +211,22 @@ export async function executeComponents(opts: {
       }),
     ),
   };
+}
+
+function workerComponents(
+  resolved: readonly ReturnType<typeof resolveManifestComponents>[number][],
+): Record<string, WorkerComponentInfo> {
+  return Object.fromEntries(
+    resolved.map((component) => [
+      component.name,
+      {
+        disposition: component.disposition,
+        env: component.env,
+        ref: component.ref,
+        digest: component.digest,
+      },
+    ]),
+  );
 }
 
 async function runWorker(inputPath: string, outputPath: string): Promise<WorkerOutput> {

@@ -4,12 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { envName, type ComponentArtifact, type ComponentRecord, type Env, type JsonValue } from "@henosis/core";
-import { assembleAndCheck, type LocalOverrides } from "./assembler.js";
+import {
+  assembleWorkspace,
+  checkWorkspaceTypes,
+  resolveManifestComponents,
+  type LocalOverrides,
+} from "./assembler.js";
+import { enrichGateFailures } from "./contract-diagnostics.js";
 import {
   executeComponents,
+  ExecutionPipelineError,
+  validateComponentBuilds,
   type ExecutionComponent,
   type ExecutionResult,
+  type PipelineFailure,
 } from "./execute.js";
+import type { GateFailure, GateReport } from "./gate-report.js";
 import { isPinned, parseManifest, type EnvironmentManifest } from "./manifest.js";
 
 export type RenderManifest = {
@@ -32,6 +42,14 @@ export type RenderOutput = {
   manifest: RenderManifest;
 };
 
+const STRUCTURED_RENDER_FAILURE_PREFIX = "HENOSIS_GATE_REPORT:";
+
+class RenderGateReportError extends Error {
+  constructor(readonly report: GateReport) {
+    super(report.failures[0]?.message ?? "Render failed");
+  }
+}
+
 export async function renderManifest(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
@@ -41,7 +59,7 @@ export async function renderManifest(opts: {
   platformRoot: string;
   localOverrides?: LocalOverrides;
 }): Promise<RenderOutput> {
-  const assembly = await assembleAndCheck({
+  const assembly = await assembleWorkspace({
     manifest: opts.manifest,
     devManifest: opts.devManifest,
     scratchDir: opts.scratchDir,
@@ -53,18 +71,100 @@ export async function renderManifest(opts: {
     throw new Error(assembly.compileOutput ?? "Workspace assembly failed");
   }
 
-  const execution = await executeComponents({
-    manifest: opts.manifest,
-    devManifest: opts.devManifest,
-    scratchDir: opts.scratchDir,
-    platformRoot: opts.platformRoot,
-    localOverrides: opts.localOverrides,
-  });
+  try {
+    await validateComponentBuilds({
+      manifest: opts.manifest,
+      devManifest: opts.devManifest,
+      scratchDir: opts.scratchDir,
+      platformRoot: opts.platformRoot,
+      localOverrides: opts.localOverrides,
+    });
+  } catch (error) {
+    throw await renderGateReportError(error, opts);
+  }
+
+  const typeCheck = await checkWorkspaceTypes({ scratchDir: opts.scratchDir });
+  if (!typeCheck.ok) {
+    throw new Error(typeCheck.compileOutput ?? "Workspace typecheck failed");
+  }
+
+  let execution: ExecutionResult;
+  try {
+    execution = await executeComponents({
+      manifest: opts.manifest,
+      devManifest: opts.devManifest,
+      scratchDir: opts.scratchDir,
+      platformRoot: opts.platformRoot,
+      localOverrides: opts.localOverrides,
+    });
+  } catch (error) {
+    throw await renderGateReportError(error, opts);
+  }
 
   return writeRenderOutput({
     execution,
     outputDir: opts.outputDir,
   });
+}
+
+async function renderGateReportError(
+  error: unknown,
+  opts: {
+    manifest: EnvironmentManifest;
+    devManifest: EnvironmentManifest;
+    scratchDir: string;
+    platformRef: string;
+    localOverrides?: LocalOverrides;
+  },
+): Promise<RenderGateReportError> {
+  const components = resolveManifestComponents({
+    manifest: opts.manifest,
+    devManifest: opts.devManifest,
+  });
+  const failure =
+    error instanceof ExecutionPipelineError
+      ? gateFailureFromPipeline(error.failure)
+      : gateFailure("renderer", "unknown", "render", errorMessage(error), errorMessage(error));
+  const failures = await enrichGateFailures([failure], {
+    scratchDir: opts.scratchDir,
+    components,
+    platformRef: opts.platformRef,
+    localOverrides: opts.localOverrides ?? {},
+  });
+  return new RenderGateReportError({ ok: false, failures });
+}
+
+function gateFailureFromPipeline(failure: PipelineFailure): GateFailure {
+  return gateFailure(
+    failure.component,
+    failure.consumerOf ?? "unknown",
+    failure.kind,
+    failure.message,
+    failure.excerpt,
+    failure.consumedPaths ?? [],
+  );
+}
+
+function gateFailure(
+  consumer: string,
+  producer: string,
+  kind: GateFailure["kind"],
+  message: string,
+  excerpt: string,
+  consumedPaths: string[] = [],
+): GateFailure {
+  return {
+    consumer,
+    producer,
+    pinnedSha: null,
+    resolvedSha: null,
+    outputsSchemaAtPinned: null,
+    outputsSchemaAtResolved: null,
+    consumedPaths,
+    kind,
+    message,
+    excerpt,
+  };
 }
 
 export async function writeRenderOutput(opts: {
@@ -241,7 +341,17 @@ function optionValue(args: readonly string[], name: string): string | undefined 
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    if (error instanceof RenderGateReportError && process.env.GITHUB_ACTIONS === "true") {
+      console.error(
+        `##[error]${STRUCTURED_RENDER_FAILURE_PREFIX}${JSON.stringify(error.report)}`,
+      );
+    } else {
+      console.error(errorMessage(error));
+    }
     process.exitCode = 1;
   });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -32,22 +32,28 @@ export async function enrichGateFailures(
 
       const producer = components.get(failure.producer);
       const consumer = components.get(failure.consumer);
+      const selfMismatch =
+        failure.kind === "validate" && failure.consumer === failure.producer;
       const resolvedSha = producer?.ref ?? null;
-      const pinnedSha = await readPinnedProducerSha({
-        scratchDir: opts.scratchDir,
-        consumer: failure.consumer,
-        producer: failure.producer,
-        consumerRepo: consumer?.repo,
-        consumerRef: consumer?.ref,
-      });
+      const pinnedSha = selfMismatch
+        ? null
+        : await readPinnedProducerSha({
+            scratchDir: opts.scratchDir,
+            consumer: failure.consumer,
+            producer: failure.producer,
+            consumerRepo: consumer?.repo,
+            consumerRef: consumer?.ref,
+          });
       const consumedPaths = uniqueSorted([
         ...failure.consumedPaths,
-        ...(await inferConsumedPaths(
-          opts.scratchDir,
-          failure.consumer,
-          failure.producer,
-          failure.excerpt,
-        )),
+        ...(selfMismatch
+          ? []
+          : await inferConsumedPaths(
+              opts.scratchDir,
+              failure.consumer,
+              failure.producer,
+              failure.excerpt,
+            )),
       ]);
 
       const outputsSchemaAtResolved =
