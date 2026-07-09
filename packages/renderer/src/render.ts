@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { envName, type ComponentArtifact, type ComponentRecord, type Env, type JsonValue } from "@henosis/core";
+import {
+  envName,
+  type ComponentArtifact,
+  type ComponentRecord,
+  type JsonValue,
+  type RuntimeEnv,
+} from "@henosis/core";
 import {
   assembleWorkspace,
   checkWorkspaceTypes,
@@ -14,7 +20,6 @@ import { enrichGateFailures } from "./contract-diagnostics.js";
 import {
   executeComponents,
   ExecutionPipelineError,
-  validateComponentBuilds,
   type ExecutionComponent,
   type ExecutionResult,
   type PipelineFailure,
@@ -71,8 +76,9 @@ export async function renderManifest(opts: {
     throw new Error(assembly.compileOutput ?? "Workspace assembly failed");
   }
 
+  let execution: ExecutionResult;
   try {
-    await validateComponentBuilds({
+    execution = await executeComponents({
       manifest: opts.manifest,
       devManifest: opts.devManifest,
       scratchDir: opts.scratchDir,
@@ -86,19 +92,6 @@ export async function renderManifest(opts: {
   const typeCheck = await checkWorkspaceTypes({ scratchDir: opts.scratchDir });
   if (!typeCheck.ok) {
     throw new Error(typeCheck.compileOutput ?? "Workspace typecheck failed");
-  }
-
-  let execution: ExecutionResult;
-  try {
-    execution = await executeComponents({
-      manifest: opts.manifest,
-      devManifest: opts.devManifest,
-      scratchDir: opts.scratchDir,
-      platformRoot: opts.platformRoot,
-      localOverrides: opts.localOverrides,
-    });
-  } catch (error) {
-    throw await renderGateReportError(error, opts);
   }
 
   return writeRenderOutput({
@@ -174,17 +167,14 @@ export async function writeRenderOutput(opts: {
 }): Promise<RenderOutput> {
   await mkdir(opts.outputDir, { recursive: true });
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
-  const pinnedComponents = Object.entries(opts.execution.components).filter(
-    (entry): entry is [string, Extract<ExecutionComponent, { disposition: "pinned" }>] =>
-      entry[1].disposition === "pinned",
-  );
+  const components = Object.entries(opts.execution.components);
   const environmentName = envName(opts.execution.env);
 
   const manifest: RenderManifest = {
     environment: environmentName,
     generatedAt,
     components: Object.fromEntries(
-      pinnedComponents.map(([name, component]) => [
+      components.map(([name, component]) => [
         name,
         {
           ref: component.ref,
@@ -198,7 +188,7 @@ export async function writeRenderOutput(opts: {
   };
 
   const componentFiles: Record<string, string> = {};
-  for (const [name, component] of pinnedComponents) {
+  for (const [name, component] of components) {
     const filePath = path.join(opts.outputDir, `${environmentName}-${name}.json`);
     await writeFile(
       filePath,
@@ -214,9 +204,9 @@ export async function writeRenderOutput(opts: {
 }
 
 export function formatComponentRenderData(
-  env: Env,
+  env: RuntimeEnv,
   componentName: string,
-  component: Extract<ExecutionComponent, { disposition: "pinned" }>,
+  component: ExecutionComponent,
 ): RenderManifestComponent & { component: string; environment: string } {
   return {
     component: componentName,

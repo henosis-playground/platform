@@ -1,5 +1,5 @@
 import { parse } from "smol-toml";
-import { envFromName, envName, type Env } from "@henosis/core";
+import { envName, type RuntimeEnv } from "@henosis/core";
 
 export type PinnedEntry = {
   kind: "pinned";
@@ -16,7 +16,7 @@ export type FollowerEntry = {
 export type ManifestEntry = PinnedEntry | FollowerEntry;
 
 export type EnvironmentManifest = {
-  environment: Env;
+  environment: RuntimeEnv;
   components: Record<string, ManifestEntry>;
 };
 
@@ -61,7 +61,7 @@ export function parseManifest(toml: string): EnvironmentManifest {
     throw new Error("Invalid manifest: components must be a table");
   }
 
-  const manifestEnv = envFromName(environment.id);
+  const manifestEnv = environmentFromManifestName(environment.id);
   const components: Record<string, ManifestEntry> = {};
   for (const [name, value] of Object.entries(componentsValue)) {
     components[name] = parseComponentEntry(name, value, manifestEnv);
@@ -80,7 +80,7 @@ export function isPinned(entry: ManifestEntry): entry is PinnedEntry {
 function parseComponentEntry(
   componentName: string,
   value: unknown,
-  manifestEnv: Env,
+  manifestEnv: RuntimeEnv,
 ): ManifestEntry {
   if (!isRecord(value)) {
     throw new Error(
@@ -149,6 +149,12 @@ function parseComponentEntry(
     ref: value.ref,
     digest: value.digest,
   };
+}
+
+function environmentFromManifestName(name: string): RuntimeEnv {
+  return name.startsWith("preview-")
+    ? { kind: "preview", id: name }
+    : { kind: name };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

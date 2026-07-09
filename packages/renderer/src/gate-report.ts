@@ -1,5 +1,5 @@
 import type { ComponentDependencyGraph, ResolvedComponent } from "./assembler.js";
-import { envName, type Env } from "@henosis/core";
+import { envName, type RuntimeEnv } from "@henosis/core";
 import type {
   ExecutionComponent,
   ExecutionResult,
@@ -96,7 +96,7 @@ export function renderFailure(message: string, excerpt = message): GateFailure {
 
 export function formatGateText(opts: {
   ok: boolean;
-  environment: Env;
+  environment: RuntimeEnv;
   components: readonly ResolvedComponent[];
   execution?: ExecutionResult;
   failures: readonly GateFailure[];
@@ -178,8 +178,9 @@ function formatExecutionSummary(execution: ExecutionResult): string[] {
   return Object.entries(execution.components).flatMap(([name, component]) => {
     if (component.disposition === "follow") {
       return [
-        `  ${name}: follows dev (not materialised)`,
+        `  ${name}: dev pin rendered${component.fellThrough ? " via dev fallThrough" : ""}`,
         ...formatOutputs(component.outputs).map((line) => `    ${line}`),
+        "",
       ];
     }
 

@@ -16,6 +16,31 @@ afterEach(async () => {
 });
 
 describe("runGate", () => {
+  it("typechecks the platform-mock v2 ctx and inferred params row", async () => {
+    const fixture = await makeGateFixture(`
+      import { defineComponent, h, type Env } from "@henosis/platform-mock";
+
+      export default defineComponent({
+        outputs: h.object({ api: h.url() }),
+        params: {
+          dev: { origin: "dev.example" },
+          staging: { origin: "staging.example" },
+          prod: { origin: "prod.example" },
+          preview: { origin: "preview.example" },
+        },
+        build: (ctx, params) => {
+          const env: Env = ctx.env;
+          const row: { origin: string } = params;
+          void env;
+          return { api: \`https://\${row.origin}\` };
+        },
+      });
+    `);
+
+    const { report } = await runGate(fixture.options);
+    expect(report).toEqual({ ok: true, failures: [] });
+  });
+
   it("validates component builds before workspace tsc", async () => {
     const fixture = await makeGateFixture(`
       import { defineComponent, h } from "@henosis/platform-mock";

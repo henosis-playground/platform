@@ -10,6 +10,7 @@ export {
   assembleAndCheck,
   assembleWorkspace,
   checkWorkspaceTypes,
+  previewChangedClosure,
   type AssemblyResult,
   type ComponentDependencyGraph,
   type ComponentDisposition,
@@ -18,7 +19,6 @@ export {
 } from "./assembler.js";
 export {
   executeComponents,
-  validateComponentBuilds,
   type ExecutionComponent,
   type ExecutionResult,
   type FollowExecutionComponent,

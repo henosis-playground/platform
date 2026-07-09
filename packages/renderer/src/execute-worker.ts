@@ -9,29 +9,31 @@ import {
   isRef,
   refOutputPath,
   refSourceComponent,
+  runWorldValidators,
   validateSchema,
   type BuildValue,
   type ComponentArtifact,
   type ComponentModule,
   type ComponentRecord,
-  type Env,
   type JsonValue,
   type ObjectSchema,
   type Ref,
+  type RuntimeEnv,
   type SchemaShape,
   type ValidationIssue,
 } from "@henosis/core";
 
 type WorkerComponentInfo = {
   disposition: "pinned" | "follow";
-  env: Env;
+  env: RuntimeEnv;
   ref: string;
   digest: string;
+  fallThroughEligible: boolean;
 };
 
 type WorkerInput = {
   components: Record<string, WorkerComponentInfo>;
-  mode: "execute" | "validate";
+  env: RuntimeEnv;
   order: string[];
   scratchDir: string;
   outputPath?: string;
@@ -39,9 +41,10 @@ type WorkerInput = {
 
 type WorkerSuccessComponent = {
   disposition: "pinned" | "follow";
-  env: Env;
+  env: RuntimeEnv;
   ref: string;
   digest: string;
+  fellThrough: boolean;
   outputs: JsonValue;
   records: readonly ComponentRecord[];
   artifacts: readonly ComponentArtifact[];
@@ -75,6 +78,8 @@ type EvaluatedComponent = {
   outputs: BuildValue<unknown>;
   records: readonly ComponentRecord[];
   artifacts: readonly ComponentArtifact[];
+  env: RuntimeEnv;
+  fellThrough: boolean;
 };
 
 const inputPath = process.argv[2];
@@ -119,10 +124,6 @@ async function run(): Promise<WorkerOutput> {
     }
   }
 
-  if (input.mode === "validate") {
-    return { ok: true, components: {} };
-  }
-
   const components: Record<string, WorkerSuccessComponent> = {};
   for (const name of input.order) {
     const resolution = resolveComponent(name, []);
@@ -155,13 +156,30 @@ async function run(): Promise<WorkerOutput> {
 
     components[name] = {
       disposition: info.disposition,
-      env: info.env,
+      env: evaluatedComponent.env,
       ref: info.ref,
       digest: info.digest,
+      fellThrough: evaluatedComponent.fellThrough,
       outputs: resolution.value,
       records: evaluatedComponent.records,
       artifacts: evaluatedComponent.artifacts,
     };
+  }
+
+  try {
+    runWorldValidators([...modules.values()], {
+      env: input.env,
+      components: Object.fromEntries(
+        [...evaluated].map(([name, component]) => [name, component.records]),
+      ),
+    });
+  } catch (error) {
+    return failure({
+      component: "world",
+      kind: "validate",
+      message: `World validation failed: ${errorMessage(error)}`,
+      excerpt: errorStack(error),
+    });
   }
 
   return { ok: true, components };
@@ -172,11 +190,19 @@ function evaluateOne(
   module: ComponentModule<ObjectSchema<SchemaShape>>,
   info: WorkerComponentInfo,
 ): { ok: true } | WorkerFailureOutput {
+  const definition = getComponentDefinition(module);
+  const fellThrough =
+    info.fallThroughEligible && definition.fallThrough === true;
+  const effectiveEnv: RuntimeEnv = fellThrough ? { kind: "dev" } : info.env;
+  const records: ComponentRecord[] = [];
+  const artifacts: ComponentArtifact[] = [];
   let result;
   try {
     result = evaluateComponent(module, {
-      env: info.env,
+      env: effectiveEnv,
       image: { ref: info.ref, digest: info.digest },
+      records: { write: (record) => records.push(record) },
+      artifacts: { write: (artifact) => artifacts.push(artifact) },
     });
   } catch (error) {
     return failure({
@@ -197,8 +223,10 @@ function evaluateOne(
   evaluated.set(name, {
     module,
     outputs: result.outputs,
-    records: result.records,
-    artifacts: result.artifacts,
+    records,
+    artifacts: fellThrough ? [] : artifacts,
+    env: effectiveEnv,
+    fellThrough,
   });
 
   return { ok: true };
@@ -360,12 +388,30 @@ function inferAbsentDependency(consumer: string): string | undefined {
     : {};
   const candidates = Object.keys(dependencies)
     .filter((dependency) => dependency.startsWith("@henosis/"))
+    .filter((dependency) => isComponentPackage(dependency))
     .map((dependency) => dependency.slice("@henosis/".length))
-    .filter((dependency) => dependency !== "core")
-    .filter((dependency) => dependency !== "platform-mock")
     .filter((dependency) => !(dependency in input.components));
 
   return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function isComponentPackage(packageName: string): boolean {
+  const packageJsonPath = path.join(
+    input.scratchDir,
+    "node_modules",
+    ...packageName.split("/"),
+    "package.json",
+  );
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    return (
+      isRecord(parsed) &&
+      isRecord(parsed.henosis) &&
+      typeof parsed.henosis.component === "string"
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function importComponent(
@@ -480,9 +526,10 @@ function parseInput(source: string): WorkerInput {
     if (
       !isRecord(value) ||
       (value.disposition !== "pinned" && value.disposition !== "follow") ||
-      !isEnv(value.env) ||
+      !isRuntimeEnv(value.env) ||
       typeof value.ref !== "string" ||
-      typeof value.digest !== "string"
+      typeof value.digest !== "string" ||
+      typeof value.fallThroughEligible !== "boolean"
     ) {
       throw new Error(`Invalid worker input for component ${name}`);
     }
@@ -492,12 +539,13 @@ function parseInput(source: string): WorkerInput {
       env: value.env,
       ref: value.ref,
       digest: value.digest,
+      fallThroughEligible: value.fallThroughEligible,
     };
   }
 
   return {
     scratchDir: parsed.scratchDir,
-    mode: parsed.mode === "validate" ? "validate" : "execute",
+    env: parseRuntimeEnv(parsed.env, "env"),
     outputPath:
       typeof parsed.outputPath === "string" ? parsed.outputPath : undefined,
     components,
@@ -520,20 +568,21 @@ function errorStack(error: unknown): string {
     : errorMessage(error);
 }
 
-function isEnv(value: unknown): value is Env {
+function isRuntimeEnv(value: unknown): value is RuntimeEnv {
   if (!isRecord(value)) {
     return false;
   }
+  return (
+    typeof value.kind === "string" &&
+    (value.kind !== "preview" || typeof value.id === "string")
+  );
+}
 
-  if (
-    value.kind === "dev" ||
-    value.kind === "staging" ||
-    value.kind === "prod"
-  ) {
-    return true;
+function parseRuntimeEnv(value: unknown, field: string): RuntimeEnv {
+  if (!isRuntimeEnv(value)) {
+    throw new Error(`Invalid worker input: ${field} must be an environment`);
   }
-
-  return value.kind === "preview" && typeof value.id === "string";
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

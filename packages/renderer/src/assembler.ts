@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Env } from "@henosis/core";
+import type { RuntimeEnv } from "@henosis/core";
 import {
   isPinned,
   type EnvironmentManifest,
@@ -25,8 +25,8 @@ export type ResolvedComponent = {
   ref: string;
   digest: string;
   disposition: ComponentDisposition;
-  env: Env;
-  follows?: Env;
+  env: RuntimeEnv;
+  follows?: RuntimeEnv;
 };
 
 export type ComponentDependencyGraph = Record<string, string[]>;
@@ -214,10 +214,53 @@ export function resolveManifestComponents(opts: {
     }
 
     return {
-      ...resolvedComponentFromPinned(name, devEntry, "follow", { kind: "dev" }),
+      ...resolvedComponentFromPinned(
+        name,
+        devEntry,
+        "follow",
+        opts.manifest.environment,
+      ),
       follows: { kind: "dev" },
     };
   });
+}
+
+/**
+ * Returns preview changed members and every transitive reverse-dependent.
+ * Stable environments have no changed-member closure.
+ */
+export function previewChangedClosure(
+  manifest: EnvironmentManifest,
+  graph: ComponentDependencyGraph,
+): Set<string> {
+  if (manifest.environment.kind !== "preview") {
+    return new Set();
+  }
+
+  const closure = new Set(
+    Object.entries(manifest.components)
+      .filter(([, entry]) => isPinned(entry))
+      .map(([name]) => name),
+  );
+  const dependents = new Map<string, string[]>();
+  for (const [consumer, dependencies] of Object.entries(graph)) {
+    for (const dependency of dependencies) {
+      const existing = dependents.get(dependency) ?? [];
+      existing.push(consumer);
+      dependents.set(dependency, existing);
+    }
+  }
+
+  const pending = [...closure];
+  for (let index = 0; index < pending.length; index += 1) {
+    for (const dependent of dependents.get(pending[index] ?? "") ?? []) {
+      if (!closure.has(dependent)) {
+        closure.add(dependent);
+        pending.push(dependent);
+      }
+    }
+  }
+  return closure;
 }
 
 export async function readComponentDependencyGraph(
@@ -287,7 +330,7 @@ function resolvedComponentFromPinned(
   name: string,
   entry: PinnedEntry,
   disposition: ComponentDisposition,
-  env: Env,
+  env: RuntimeEnv,
 ): ResolvedComponent {
   return {
     name,

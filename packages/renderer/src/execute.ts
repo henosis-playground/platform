@@ -9,12 +9,19 @@ import {
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ComponentArtifact, ComponentRecord, Env, JsonValue } from "@henosis/core";
+import type {
+  ComponentArtifact,
+  ComponentRecord,
+  JsonValue,
+  RuntimeEnv,
+} from "@henosis/core";
 import {
+  previewChangedClosure,
   readComponentDependencyGraph,
   resolveManifestComponents,
   topologicalOrder,
   type LocalOverrides,
+  type ResolvedComponent,
 } from "./assembler.js";
 import type { EnvironmentManifest } from "./manifest.js";
 
@@ -35,23 +42,23 @@ export class ExecutionPipelineError extends Error {
   }
 }
 
-export type PinnedExecutionComponent = {
-  disposition: "pinned";
+type ExecutionComponentData = {
   ref: string;
   digest: string;
-  env: Env;
+  env: RuntimeEnv;
+  fellThrough: boolean;
   outputs: JsonValue;
   records: readonly ComponentRecord[];
   artifacts: readonly ComponentArtifact[];
 };
 
-export type FollowExecutionComponent = {
+export type PinnedExecutionComponent = ExecutionComponentData & {
+  disposition: "pinned";
+};
+
+export type FollowExecutionComponent = ExecutionComponentData & {
   disposition: "follow";
-  follows: Env;
-  env: Env;
-  outputs: JsonValue;
-  records: readonly ComponentRecord[];
-  artifacts: readonly ComponentArtifact[];
+  follows: RuntimeEnv;
 };
 
 export type ExecutionComponent =
@@ -59,20 +66,21 @@ export type ExecutionComponent =
   | FollowExecutionComponent;
 
 export type ExecutionResult = {
-  env: Env;
+  env: RuntimeEnv;
   components: Record<string, ExecutionComponent>;
 };
 
 type WorkerComponentInfo = {
   disposition: "pinned" | "follow";
-  env: Env;
+  env: RuntimeEnv;
   ref: string;
   digest: string;
+  fallThroughEligible: boolean;
 };
 
 type WorkerInput = {
   components: Record<string, WorkerComponentInfo>;
-  mode?: "execute" | "validate";
+  env: RuntimeEnv;
   order: string[];
   scratchDir: string;
   outputPath: string;
@@ -80,9 +88,10 @@ type WorkerInput = {
 
 type WorkerSuccessComponent = {
   disposition: "pinned" | "follow";
-  env: Env;
+  env: RuntimeEnv;
   ref: string;
   digest: string;
+  fellThrough: boolean;
   outputs: JsonValue;
   records: readonly ComponentRecord[];
   artifacts: readonly ComponentArtifact[];
@@ -97,42 +106,6 @@ type WorkerOutput =
       ok: false;
       failure: PipelineFailure;
     };
-
-export async function validateComponentBuilds(opts: {
-  manifest: EnvironmentManifest;
-  devManifest: EnvironmentManifest;
-  scratchDir: string;
-  platformRoot: string;
-  localOverrides?: LocalOverrides;
-}): Promise<void> {
-  void opts.platformRoot;
-  void opts.localOverrides;
-
-  const resolved = resolveManifestComponents({
-    manifest: opts.manifest,
-    devManifest: opts.devManifest,
-  });
-  const componentNames = resolved.map((component) => component.name);
-  const graph = await readComponentDependencyGraph(opts.scratchDir, componentNames);
-  const order = topologicalOrder(graph, componentNames);
-  const inputPath = path.join(opts.scratchDir, ".henosis-validate-input.json");
-  const outputPath = path.join(opts.scratchDir, ".henosis-validate-output.json");
-
-  const workerInput: WorkerInput = {
-    scratchDir: opts.scratchDir,
-    outputPath,
-    mode: "validate",
-    order,
-    components: workerComponents(resolved),
-  };
-
-  await writeFile(inputPath, `${JSON.stringify(workerInput)}\n`);
-  const workerOutput = await runWorker(inputPath, outputPath);
-
-  if (!workerOutput.ok) {
-    throw new ExecutionPipelineError(workerOutput.failure);
-  }
-}
 
 export async function executeComponents(opts: {
   manifest: EnvironmentManifest;
@@ -151,14 +124,20 @@ export async function executeComponents(opts: {
   const componentNames = resolved.map((component) => component.name);
   const graph = await readComponentDependencyGraph(opts.scratchDir, componentNames);
   const order = topologicalOrder(graph, componentNames);
+  const changedClosure = previewChangedClosure(opts.manifest, graph);
   const inputPath = path.join(opts.scratchDir, ".henosis-execute-input.json");
   const outputPath = path.join(opts.scratchDir, ".henosis-execute-output.json");
 
   const workerInput: WorkerInput = {
     scratchDir: opts.scratchDir,
     outputPath,
+    env: opts.manifest.environment,
     order,
-    components: workerComponents(resolved),
+    components: workerComponents(
+      resolved,
+      opts.manifest.environment.kind === "preview",
+      changedClosure,
+    ),
   };
 
   await writeFile(inputPath, `${JSON.stringify(workerInput)}\n`);
@@ -182,16 +161,22 @@ export async function executeComponents(opts: {
           });
         }
 
+        const common: ExecutionComponentData = {
+          ref: component.ref,
+          digest: component.digest,
+          env: output.env,
+          fellThrough: output.fellThrough,
+          outputs: output.outputs,
+          records: output.records,
+          artifacts: output.artifacts,
+        };
         if (component.disposition === "follow") {
           return [
             component.name,
             {
+              ...common,
               disposition: "follow",
               follows: { kind: "dev" },
-              env: { kind: "dev" },
-              outputs: output.outputs,
-              records: output.records,
-              artifacts: output.artifacts,
             } satisfies FollowExecutionComponent,
           ];
         }
@@ -199,13 +184,8 @@ export async function executeComponents(opts: {
         return [
           component.name,
           {
+            ...common,
             disposition: "pinned",
-            env: component.env,
-            ref: component.ref,
-            digest: component.digest,
-            outputs: output.outputs,
-            records: output.records,
-            artifacts: output.artifacts,
           } satisfies PinnedExecutionComponent,
         ];
       }),
@@ -214,7 +194,9 @@ export async function executeComponents(opts: {
 }
 
 function workerComponents(
-  resolved: readonly ReturnType<typeof resolveManifestComponents>[number][],
+  resolved: readonly ResolvedComponent[],
+  preview: boolean,
+  changedClosure: ReadonlySet<string>,
 ): Record<string, WorkerComponentInfo> {
   return Object.fromEntries(
     resolved.map((component) => [
@@ -224,6 +206,7 @@ function workerComponents(
         env: component.env,
         ref: component.ref,
         digest: component.digest,
+        fallThroughEligible: preview && !changedClosure.has(component.name),
       },
     ]),
   );

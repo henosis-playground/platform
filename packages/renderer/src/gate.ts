@@ -11,7 +11,7 @@ import {
 import {
   executeComponents,
   ExecutionPipelineError,
-  validateComponentBuilds,
+  type ExecutionResult,
 } from "./execute.js";
 import { enrichGateFailures } from "./contract-diagnostics.js";
 import {
@@ -81,8 +81,9 @@ export async function runGate(opts: GateCliOptions): Promise<{
     };
   }
 
+  let execution: ExecutionResult;
   try {
-    await validateComponentBuilds({
+    execution = await executeComponents({
       manifest,
       devManifest,
       scratchDir: opts.scratchDir,
@@ -138,48 +139,17 @@ export async function runGate(opts: GateCliOptions): Promise<{
     };
   }
 
-  try {
-    const execution = await executeComponents({
-      manifest,
-      devManifest,
-      scratchDir: opts.scratchDir,
-      platformRoot,
-      localOverrides: opts.localOverrides,
-    });
-
-    const report: GateReport = { ok: true, failures: [] };
-    return {
-      report,
-      text: formatGateText({
-        ok: true,
-        environment: manifest.environment,
-        components,
-        execution,
-        failures: [],
-      }),
-    };
-  } catch (error) {
-    const failure =
-      error instanceof ExecutionPipelineError
-        ? pipelineFailure(error.failure)
-        : renderFailure(error instanceof Error ? error.message : String(error));
-    const failures = await enrichGateFailures([failure], {
-      scratchDir: opts.scratchDir,
+  const report: GateReport = { ok: true, failures: [] };
+  return {
+    report,
+    text: formatGateText({
+      ok: true,
+      environment: manifest.environment,
       components,
-      platformRef,
-      localOverrides: opts.localOverrides,
-    });
-    const report: GateReport = { ok: false, failures };
-    return {
-      report,
-      text: formatGateText({
-        ok: false,
-        environment: manifest.environment,
-        components,
-        failures,
-      }),
-    };
-  }
+      execution,
+      failures: [],
+    }),
+  };
 }
 
 async function main(): Promise<void> {
