@@ -60,11 +60,29 @@ export type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
+/** A pre-resolution structured record value, including symbolic output refs. */
+export type ComponentRecordValue =
+  | string
+  | number
+  | boolean
+  | null
+  | Ref<unknown>
+  | readonly ComponentRecordValue[]
+  | { readonly [key: string]: ComponentRecordValue };
+
 /** A structured platform record emitted while evaluating one component. */
 export type ComponentRecord = {
   /** A platform-defined discriminator for the structured record. */
   readonly kind: string;
-  /** The structured record payload. */
+  /** The structured record payload, including pre-resolution output refs. */
+  readonly data: ComponentRecordValue;
+};
+
+/** A component record after every symbolic output ref has been resolved. */
+export type ResolvedComponentRecord = {
+  /** A platform-defined discriminator for the structured record. */
+  readonly kind: string;
+  /** The fully resolved structured record payload. */
   readonly data: JsonValue;
 };
 
@@ -106,7 +124,7 @@ export type WorldRecords<Environment extends RuntimeEnv = RuntimeEnv> = {
   readonly env: Environment;
   /** Records grouped by manifest component identity. */
   readonly components: Readonly<
-    Record<string, readonly ComponentRecord[]>
+    Record<string, readonly ResolvedComponentRecord[]>
   >;
 };
 

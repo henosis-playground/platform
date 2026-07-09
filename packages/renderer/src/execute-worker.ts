@@ -18,6 +18,7 @@ import {
   type JsonValue,
   type ObjectSchema,
   type Ref,
+  type ResolvedComponentRecord,
   type RuntimeEnv,
   type SchemaShape,
   type ValidationIssue,
@@ -46,7 +47,7 @@ type WorkerSuccessComponent = {
   digest: string;
   fellThrough: boolean;
   outputs: JsonValue;
-  records: readonly ComponentRecord[];
+  records: readonly ResolvedComponentRecord[];
   artifacts: readonly ComponentArtifact[];
 };
 
@@ -72,6 +73,9 @@ type WorkerFailureOutput = {
 };
 
 type ResolutionResult = { ok: true; value: JsonValue } | WorkerFailureOutput;
+type RecordResolutionResult =
+  | { ok: true; value: readonly ResolvedComponentRecord[] }
+  | WorkerFailureOutput;
 
 type EvaluatedComponent = {
   module: ComponentModule<ObjectSchema<SchemaShape>>;
@@ -154,6 +158,11 @@ async function run(): Promise<WorkerOutput> {
       return validationFailure(name, validationIssues[0]);
     }
 
+    const recordResolution = resolveRecords(name, evaluatedComponent.records);
+    if (!recordResolution.ok) {
+      return recordResolution;
+    }
+
     components[name] = {
       disposition: info.disposition,
       env: evaluatedComponent.env,
@@ -161,7 +170,7 @@ async function run(): Promise<WorkerOutput> {
       digest: info.digest,
       fellThrough: evaluatedComponent.fellThrough,
       outputs: resolution.value,
-      records: evaluatedComponent.records,
+      records: recordResolution.value,
       artifacts: evaluatedComponent.artifacts,
     };
   }
@@ -170,7 +179,10 @@ async function run(): Promise<WorkerOutput> {
     runWorldValidators([...modules.values()], {
       env: input.env,
       components: Object.fromEntries(
-        [...evaluated].map(([name, component]) => [name, component.records]),
+        Object.entries(components).map(([name, component]) => [
+          name,
+          component.records,
+        ]),
       ),
     });
   } catch (error) {
@@ -183,6 +195,25 @@ async function run(): Promise<WorkerOutput> {
   }
 
   return { ok: true, components };
+}
+
+function resolveRecords(
+  component: string,
+  records: readonly ComponentRecord[],
+): RecordResolutionResult {
+  const resolvedRecords: ResolvedComponentRecord[] = [];
+  for (const record of records) {
+    const resolution = resolveValue(
+      record.data as BuildValue<unknown>,
+      component,
+      [],
+    );
+    if (!resolution.ok) {
+      return resolution;
+    }
+    resolvedRecords.push({ kind: record.kind, data: resolution.value });
+  }
+  return { ok: true, value: resolvedRecords };
 }
 
 function evaluateOne(

@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import {
   envName,
   type ComponentArtifact,
-  type ComponentRecord,
   type JsonValue,
+  type ResolvedComponentRecord,
   type RuntimeEnv,
 } from "@henosis/core";
 import {
@@ -37,7 +37,7 @@ export type RenderManifestComponent = {
   ref: string;
   digest: string;
   outputs: JsonValue;
-  records: readonly ComponentRecord[];
+  records: readonly ResolvedComponentRecord[];
   artifacts: readonly ComponentArtifact[];
 };
 

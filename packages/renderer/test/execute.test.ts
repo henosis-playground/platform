@@ -299,6 +299,15 @@ describe("executeComponents", () => {
       { "@henosis/test-platform": "*" },
       componentSource("service-a", [], false),
     );
+    await writeComponent(
+      scratchDir,
+      "service-b",
+      {
+        "@henosis/test-platform": "*",
+        "@henosis/service-a": "*",
+      },
+      componentSource("service-b", ["service-a"], false),
+    );
     const manifest = parseManifest(`
       [environment]
       id = "dev"
@@ -307,6 +316,11 @@ describe("executeComponents", () => {
       repo = "henosis-playground/service-a"
       ref = "service-a-dev"
       digest = "sha256:service-a-dev"
+
+      [components.service-b]
+      repo = "henosis-playground/service-b"
+      ref = "service-b-dev"
+      digest = "sha256:service-b-dev"
     `);
     const execution = await executeComponents({
       manifest,
@@ -320,6 +334,15 @@ describe("executeComponents", () => {
         { kind: "test-object", data: { environment: "dev" } },
       ],
       artifacts: [{ path: "environment.txt", contents: "dev" }],
+    });
+    expect(execution.components["service-b"]).toMatchObject({
+      records: [
+        {
+          kind: "build-ref",
+          data: { value: "https://service-a-dev.example" },
+        },
+        { kind: "test-object", data: { environment: "dev" } },
+      ],
     });
 
     const outputDir = await mkdtemp(path.join(os.tmpdir(), "henosis-render-"));
@@ -335,6 +358,13 @@ describe("executeComponents", () => {
       ],
       artifacts: [{ path: "environment.txt", contents: "dev" }],
     });
+    expect(render.manifest.components["service-b"]?.records).toEqual([
+      {
+        kind: "build-ref",
+        data: { value: "https://service-a-dev.example" },
+      },
+      { kind: "test-object", data: { environment: "dev" } },
+    ]);
   });
 
   it("invokes the platform world-validator hook through core", async () => {
@@ -680,17 +710,27 @@ async function writeTestPlatform(
         h,
         type BuildContext as CoreBuildContext,
         type Env as CoreEnv,
+        type Ref,
       } from "@henosis/core";
 
       const stableEnvKinds = ["dev", "staging", "prod"] as const;
       type StableEnvKind = (typeof stableEnvKinds)[number];
       type Env = CoreEnv<StableEnvKind>;
-      type Context = CoreBuildContext<Env>;
+      type Context = CoreBuildContext<Env> & {
+        record(value: Ref<string>): void;
+      };
 
       const platform = definePlatform<StableEnvKind, Context>({
         stableEnvKinds,
         validators: ${failValidation ? "[() => { throw new Error(\"reserved hook ran\"); }]" : "[]"},
-        createContext: ({ env, image }) => ({ env, image }),
+        createContext: ({ env, image, records }) => ({
+          env,
+          image,
+          record: (value) => records.write({
+            kind: "build-ref",
+            data: { value },
+          }),
+        }),
         finalize: (ctx, writers) => {
           writers.records.write({
             kind: "test-object",
@@ -723,6 +763,9 @@ function componentSource(
   const dependencyOutput = dependencies.length === 0
     ? ""
     : ", dependency: dependency0.endpoint";
+  const recordDependency = dependencies.length === 0
+    ? ""
+    : "ctx.record(dependency0.endpoint);";
   return `
     import { defineComponent, envName, h } from "@henosis/test-platform";
     ${imports}
@@ -739,10 +782,13 @@ function componentSource(
         prod: { prefix: "${name}" },
         preview: { prefix: "${name}" },
       },
-      build: (ctx, params) => ({
-        endpoint: \`https://\${params.prefix}-\${envName(ctx.env)}.example\`
-        ${dependencyOutput}
-      }),
+      build: (ctx, params) => {
+        ${recordDependency}
+        return {
+          endpoint: \`https://\${params.prefix}-\${envName(ctx.env)}.example\`
+          ${dependencyOutput}
+        };
+      },
     });
   `;
 }

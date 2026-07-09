@@ -11,8 +11,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ComponentArtifact,
-  ComponentRecord,
   JsonValue,
+  ResolvedComponentRecord,
   RuntimeEnv,
 } from "@henosis/core";
 import {
@@ -48,7 +48,7 @@ type ExecutionComponentData = {
   env: RuntimeEnv;
   fellThrough: boolean;
   outputs: JsonValue;
-  records: readonly ComponentRecord[];
+  records: readonly ResolvedComponentRecord[];
   artifacts: readonly ComponentArtifact[];
 };
 
@@ -93,7 +93,7 @@ type WorkerSuccessComponent = {
   digest: string;
   fellThrough: boolean;
   outputs: JsonValue;
-  records: readonly ComponentRecord[];
+  records: readonly ResolvedComponentRecord[];
   artifacts: readonly ComponentArtifact[];
 };
 

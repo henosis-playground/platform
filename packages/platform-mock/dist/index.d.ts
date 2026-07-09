@@ -15,6 +15,6 @@ export declare const envName: (env: CoreEnv<"dev" | "staging" | "prod">) => stri
 export declare const envFromName: (name: string) => CoreEnv<"dev" | "staging" | "prod">;
 /** Constructors for Henosis output schemas. */
 export { h };
-export type { ArtifactWriter, BuildValue, ComponentArtifact, ComponentDefinition, ComponentModule, ComponentRecord, ComponentWriters, ComponentWithParamsSpec, ComponentWithoutParamsSpec, ImageRef, InferSchema, JsonValue, NumberSchema, ObjectSchema, ParamsByEnv, RecordWriter, Ref, RefObject, Schema, SchemaBuilder, SchemaShape, StringSchema, UrlSchema, } from "@henosis/core";
+export type { ArtifactWriter, BuildValue, ComponentArtifact, ComponentDefinition, ComponentModule, ComponentRecord, ComponentRecordValue, ComponentWriters, ComponentWithParamsSpec, ComponentWithoutParamsSpec, ImageRef, InferSchema, JsonValue, NumberSchema, ObjectSchema, ParamsByEnv, RecordWriter, Ref, RefObject, ResolvedComponentRecord, Schema, SchemaBuilder, SchemaShape, StringSchema, UrlSchema, } from "@henosis/core";
 export type { PlatformMockDefineComponent, V1CompatibilityComponentSpec, } from "./v1-compat.js";
 //# sourceMappingURL=index.d.ts.map

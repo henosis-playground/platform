@@ -44,11 +44,22 @@ export type BuildContext<Environment extends RuntimeEnv = RuntimeEnv> = {
 export type JsonValue = string | number | boolean | null | readonly JsonValue[] | {
     readonly [key: string]: JsonValue;
 };
+/** A pre-resolution structured record value, including symbolic output refs. */
+export type ComponentRecordValue = string | number | boolean | null | Ref<unknown> | readonly ComponentRecordValue[] | {
+    readonly [key: string]: ComponentRecordValue;
+};
 /** A structured platform record emitted while evaluating one component. */
 export type ComponentRecord = {
     /** A platform-defined discriminator for the structured record. */
     readonly kind: string;
-    /** The structured record payload. */
+    /** The structured record payload, including pre-resolution output refs. */
+    readonly data: ComponentRecordValue;
+};
+/** A component record after every symbolic output ref has been resolved. */
+export type ResolvedComponentRecord = {
+    /** A platform-defined discriminator for the structured record. */
+    readonly kind: string;
+    /** The fully resolved structured record payload. */
     readonly data: JsonValue;
 };
 /** A deterministic file emitted while evaluating one component. */
@@ -82,7 +93,7 @@ export type WorldRecords<Environment extends RuntimeEnv = RuntimeEnv> = {
     /** The requesting world environment. */
     readonly env: Environment;
     /** Records grouped by manifest component identity. */
-    readonly components: Readonly<Record<string, readonly ComponentRecord[]>>;
+    readonly components: Readonly<Record<string, readonly ResolvedComponentRecord[]>>;
 };
 /** A platform-provided validation check over a rendered world's records. */
 export type WorldValidator<Environment extends RuntimeEnv = RuntimeEnv> = (world: WorldRecords<Environment>) => void;
