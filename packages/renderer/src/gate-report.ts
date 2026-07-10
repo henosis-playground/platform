@@ -44,7 +44,8 @@ export function parseCompileFailures(
     }
 
     const field = fieldMatch[1] ?? "unknown";
-    const filePath = parseErrorFilePath(line);
+    const filePath =
+      parseErrorFilePath(line) ?? precedingErrorFilePath(lines, index);
     const component = filePath === undefined ? undefined : componentFromPath(filePath);
     const consumer = component ?? firstConsumerWithDependency(graph) ?? "unknown";
     const producer = firstProducerForConsumer(graph, consumer) ?? "unknown";
@@ -270,6 +271,19 @@ function parseErrorFilePath(line: string): string | undefined {
     return colonMatch[1];
   }
 
+  return undefined;
+}
+
+function precedingErrorFilePath(
+  lines: readonly string[],
+  index: number,
+): string | undefined {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const line = lines[cursor] ?? "";
+    const filePath = parseErrorFilePath(line);
+    if (filePath !== undefined) return filePath;
+    if (line.trim().length === 0) return undefined;
+  }
   return undefined;
 }
 

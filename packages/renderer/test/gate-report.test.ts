@@ -54,7 +54,10 @@ describe("parseCompileFailures", () => {
   });
 
   it("attributes a missing required field to the component source", () => {
-    const output = "../../node_modules/@henosis/service-a/src/index.ts(12,9): error TS2345: Property 'resources' is missing in type '{ targetPort: number; }' but required in type 'ServiceSpec'.";
+    const output = [
+      "../../node_modules/@henosis/service-a/src/index.ts(12,9): error TS2345: Argument of type '{ targetPort: number; }' is not assignable to parameter of type 'ServiceSpec'.",
+      "  Property 'resources' is missing in type '{ targetPort: number; }' but required in type 'ServiceSpec'.",
+    ].join("\n");
 
     expect(parseCompileFailures(output, { "service-a": [] })[0]).toMatchObject({
       consumer: "service-a",
