@@ -58,7 +58,7 @@ export function parseCompileFailures(
   }
 
   if (failures.length > 0) {
-    return failures;
+    return coalesceCompileFailures(failures);
   }
 
   return [
@@ -71,6 +71,28 @@ export function parseCompileFailures(
       consumedPaths: [],
     }),
   ];
+}
+
+function coalesceCompileFailures(
+  failures: readonly GateFailure[],
+): GateFailure[] {
+  const byContract = new Map<string, GateFailure>();
+  for (const failure of failures) {
+    const key = `${failure.consumer}\0${failure.producer}`;
+    const existing = byContract.get(key);
+    if (existing === undefined) {
+      byContract.set(key, failure);
+      continue;
+    }
+    byContract.set(key, {
+      ...existing,
+      consumedPaths: [...new Set([
+        ...existing.consumedPaths,
+        ...failure.consumedPaths,
+      ])].sort(),
+    });
+  }
+  return [...byContract.values()];
 }
 
 /** Converts all structured issues in a core failure without dropping evidence. */

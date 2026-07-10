@@ -33,6 +33,26 @@ describe("parseCompileFailures", () => {
     ]);
   });
 
+  it("coalesces repeated TypeScript errors for one consumer contract", () => {
+    const output = [
+      "../../node_modules/@henosis/service-b/src/index.ts(10,33): error TS2339: Property 'api' does not exist on type '{}'.",
+      "../../node_modules/@henosis/service-b/src/index.ts(11,35): error TS2339: Property 'port' does not exist on type '{}'.",
+      "../../node_modules/@henosis/service-b/src/index.ts(12,33): error TS2339: Property 'api' does not exist on type '{}'.",
+    ].join("\n");
+
+    const failures = parseCompileFailures(output, {
+      "service-a": [],
+      "service-b": ["service-a"],
+    });
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      consumer: "service-b",
+      producer: "service-a",
+      consumedPaths: ["api", "port"],
+    });
+  });
+
   it("keeps self-contract messages parser-compatible and moves context to the excerpt", () => {
     const [failure] = pipelineFailures(
       {
