@@ -1,4 +1,6 @@
 packages:
   - "packages/*"
+overrides:
+  "@henosis/core": "workspace:*"
 allowBuilds:
   esbuild: true
