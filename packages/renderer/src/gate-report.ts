@@ -155,6 +155,10 @@ export function withFailureContext(
     : formatEnvironment(environment);
   return failures.map((failure) => ({
     ...failure,
+    message:
+      environmentName !== undefined && failure.kind === "render"
+        ? `${failure.message} (environment: ${environmentName})`
+        : failure.message,
     excerpt: [
       ...(environmentName === undefined
         ? []
