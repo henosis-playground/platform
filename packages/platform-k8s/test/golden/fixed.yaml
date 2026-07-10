@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: public-api
+    henosis.dev/environment: dev
+  name: public-api
+  namespace: payments-api-dev
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: public-api
+      henosis.dev/environment: dev
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: public-api
+        henosis.dev/environment: dev
+    spec:
+      containers:
+        - env:
+            - name: ALPHA
+              value: one
+            - name: ZED
+              value: "2"
+          image: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          name: public-api
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/name: public-api
+    henosis.dev/environment: dev
+  name: public-api
+  namespace: payments-api-dev
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: public-api
+      henosis.dev/environment: dev
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    henosis.dev/environment: dev
+  name: payments-api-dev
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: public-api
+    henosis.dev/environment: dev
+  name: public-api
+  namespace: payments-api-dev
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/name: public-api
+    henosis.dev/environment: dev
+  type: ClusterIP
