@@ -332,6 +332,14 @@ export function defaultPlatformRoot(): string {
 
 /** Resolves the current local Git HEAD without invoking version-control commands. */
 export function currentPlatformRef(platformRoot: string): string {
+  const preparedRefPath = path.join(platformRoot, ".henosis-platform-sha");
+  if (existsSync(preparedRefPath)) {
+    const preparedRef = readFileSync(preparedRefPath, "utf8").trim();
+    if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(preparedRef)) {
+      throw new Error(`Invalid prepared platform ref ${JSON.stringify(preparedRef)}`);
+    }
+    return preparedRef;
+  }
   const gitDir = path.join(platformRoot, ".git");
   const head = readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
   if (!head.startsWith("ref: ")) return head;
