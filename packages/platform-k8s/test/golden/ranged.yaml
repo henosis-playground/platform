@@ -24,7 +24,7 @@ spec:
               value: one
             - name: ZED
               value: "2"
-          image: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          image: henosis-poc.invalid/sample@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           name: public-api
           ports:
             - containerPort: 8080

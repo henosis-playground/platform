@@ -3,6 +3,7 @@ import {
   compareCodeUnits,
   definePlatform,
   h,
+  isRef,
   type BuildContext as CoreBuildContext,
   type ComponentArtifact,
   type DeferredJsonValue,
@@ -13,6 +14,8 @@ import {
   type RecordSink,
   type Ref,
   type ResolvedComponentRecord,
+  type ResolvedWorld,
+  type ValidationIssue,
 } from "@henosis/core";
 import { PACKAGE_VERSION } from "./version.generated.js";
 
@@ -183,7 +186,12 @@ const platform = definePlatform<typeof stableEnvKinds, BuildContext>({
     const contents = recordsToStableYaml(input.records);
     return contents.length === 0 ? [] : [{ path: "k8s.yaml", contents }];
   },
-  validators: [],
+  validators: [
+    {
+      id: "k8s.hpa-semantics",
+      validate: validateResolvedHpas,
+    },
+  ],
 });
 
 /** Kubernetes-bound component definition helper. */
@@ -306,7 +314,8 @@ function addServiceObjects(
   const replicas = ranged ? spec.replicas.min : spec.replicas;
   const container: Record<string, DeferredJsonValue> = {
     name,
-    image: input.image.digest,
+    // PARKED(image-identity): replace this unpullable reference when image identity work resumes.
+    image: puntedImageReference(input.componentName, input.image.digest),
     ports: [{ name: "http", containerPort: spec.targetPort }],
     resources: resourcesRecord(spec.resources),
   };
@@ -421,28 +430,120 @@ function validateReplicas(replicas: Replicas): void {
     return;
   }
   if (!isReplicaRange(replicas)) return;
-  if (typeof replicas.min === "number") {
-    assertNonNegativeInteger(replicas.min, "replicas.min");
+  const issue = replicaRangeIssues(
+    replicas.min,
+    replicas.max,
+    replicas.targetCpu,
+  )[0];
+  if (issue !== undefined) throw new Error(issue.message);
+}
+
+function validateResolvedHpas(
+  world: ResolvedWorld<StableEnvKind>,
+): readonly ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  for (const [componentName, component] of Object.entries(world.components)) {
+    component.records.forEach((record, index) => {
+      if (record.kind !== kubernetesRecordKind || !isJsonObject(record.data)) {
+        return;
+      }
+      if (record.data.kind !== "HorizontalPodAutoscaler") return;
+      const spec = jsonObjectProperty(record.data, "spec");
+      const metrics = spec === undefined ? undefined : spec.metrics;
+      const firstMetric = Array.isArray(metrics) ? metrics[0] : undefined;
+      const resource = isJsonObject(firstMetric)
+        ? jsonObjectProperty(firstMetric, "resource")
+        : undefined;
+      const target = resource === undefined
+        ? undefined
+        : jsonObjectProperty(resource, "target");
+      const targetCpu = target?.averageUtilization;
+      for (const issue of replicaRangeIssues(
+        spec?.minReplicas,
+        spec?.maxReplicas,
+        targetCpu,
+      )) {
+        issues.push({
+          code: "k8s.hpa-invalid",
+          message: issue.message,
+          component: componentName,
+          record: { index, path: issue.path },
+        });
+      }
+    });
   }
-  if (typeof replicas.max === "number") {
-    assertNonNegativeInteger(replicas.max, "replicas.max");
-  }
-  if (
-    typeof replicas.min === "number" &&
-    typeof replicas.max === "number" &&
-    replicas.min > replicas.max
-  ) {
-    throw new Error("replicas.min must not exceed replicas.max");
-  }
-  if (typeof replicas.targetCpu === "number") {
-    if (
-      !Number.isInteger(replicas.targetCpu) ||
-      replicas.targetCpu < 1 ||
-      replicas.targetCpu > 100
-    ) {
-      throw new Error("replicas.targetCpu must be an integer from 1 through 100");
+  return issues;
+}
+
+function replicaRangeIssues(
+  min: JsonValue | Ref<number> | undefined,
+  max: JsonValue | Ref<number> | undefined,
+  targetCpu: JsonValue | Ref<number> | undefined,
+): readonly { readonly path: string; readonly message: string }[] {
+  const issues: Array<{ path: string; message: string }> = [];
+  const concreteMin = isRef(min) ? undefined : min;
+  const concreteMax = isRef(max) ? undefined : max;
+  const concreteTargetCpu = isRef(targetCpu) ? undefined : targetCpu;
+
+  if (concreteMin !== undefined) {
+    if (typeof concreteMin !== "number" || !Number.isInteger(concreteMin) || concreteMin < 0) {
+      issues.push({
+        path: "/spec/minReplicas",
+        message: "replicas.min must be a non-negative integer",
+      });
     }
   }
+  if (
+    concreteMax !== undefined &&
+    (typeof concreteMax !== "number" ||
+      !Number.isInteger(concreteMax) ||
+      concreteMax < 1)
+  ) {
+    issues.push({
+      path: "/spec/maxReplicas",
+      message: "replicas.max must be a positive integer",
+    });
+  }
+  if (
+    typeof concreteMin === "number" &&
+    Number.isInteger(concreteMin) &&
+    typeof concreteMax === "number" &&
+    Number.isInteger(concreteMax) &&
+    concreteMin > concreteMax
+  ) {
+    issues.push({
+      path: "/spec/maxReplicas",
+      message: "replicas.min must not exceed replicas.max",
+    });
+  }
+  if (concreteMin === 0) {
+    issues.push({
+      path: "/spec/minReplicas",
+      message: "replicas.min must be at least 1 with the CPU Resource metric",
+    });
+  }
+  if (
+    concreteTargetCpu !== undefined &&
+    (typeof concreteTargetCpu !== "number" ||
+      !Number.isInteger(concreteTargetCpu) ||
+      concreteTargetCpu <= 0)
+  ) {
+    issues.push({
+      path: "/spec/metrics/0/resource/target/averageUtilization",
+      message: "replicas.targetCpu must be a positive integer",
+    });
+  }
+  return issues;
+}
+
+function puntedImageReference(componentName: string, digest: string): string {
+  if (!/^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(componentName)) {
+    throw new Error(`Invalid image component name ${JSON.stringify(componentName)}`);
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+    throw new Error(`Invalid sha256 image digest ${JSON.stringify(digest)}`);
+  }
+  return `henosis-poc.invalid/${componentName}@${digest}`;
 }
 
 function isReplicaRange(value: Replicas): value is ReplicaRange {
@@ -550,4 +651,12 @@ function isJsonObject(
   value: JsonValue | undefined,
 ): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonObjectProperty(
+  value: Readonly<Record<string, JsonValue>>,
+  key: string,
+): Readonly<Record<string, JsonValue>> | undefined {
+  const property = value[key];
+  return isJsonObject(property) ? property : undefined;
 }

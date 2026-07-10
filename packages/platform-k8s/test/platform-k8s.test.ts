@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { evaluateWorld, representativePreviewName } from "@henosis/core";
+import {
+  PipelineError,
+  evaluateWorld,
+  representativePreviewName,
+} from "@henosis/core";
 import { parseAllDocuments } from "yaml";
 import { validate as validateDeployment } from "kubernetes-models/_schemas/IoK8sApiAppsV1Deployment";
 import { validate as validateHpa } from "kubernetes-models/_schemas/IoK8sApiAutoscalingV2HorizontalPodAutoscaler";
@@ -70,6 +74,15 @@ describe("Kubernetes records and stable YAML", () => {
     expect(yaml).toBe(await golden("fixed.yaml"));
     expect(yaml).toContain("kind: PodDisruptionBudget");
     expect(yaml).not.toContain("kind: HorizontalPodAutoscaler");
+    const deployment = parseAllDocuments(yaml ?? "")
+      .map((document) => document.toJSON())
+      .find((document) => document.kind === "Deployment");
+    expect(deployment.spec.template.spec.containers[0].image).toBe(
+      `henosis-poc.invalid/sample@${digest}`,
+    );
+    expect(deployment.spec.template.spec.containers[0].image).toMatch(
+      /^[a-z0-9.-]+\/[a-z0-9._-]+@sha256:[0-9a-f]{64}$/,
+    );
     validateDocuments(yaml ?? "", [
       "Deployment",
       "PodDisruptionBudget",
@@ -187,6 +200,87 @@ describe("Kubernetes derivations and build-time checks", () => {
     expect(() => evaluateWorld(singlePlan(invalidRange))).toThrow(
       "replicas.min must not exceed replicas.max",
     );
+  });
+
+  it.each([
+    {
+      replicas: { min: 0, max: 1, targetCpu: 70 },
+      message: "replicas.min must be at least 1 with the CPU Resource metric",
+    },
+    {
+      replicas: { min: 0, max: 0, targetCpu: 70 },
+      message: "replicas.max must be a positive integer",
+    },
+    {
+      replicas: { min: 1, max: 2, targetCpu: 0 },
+      message: "replicas.targetCpu must be a positive integer",
+    },
+  ])("rejects invalid HPA semantics: $message", ({ replicas, message }) => {
+    expect(() => render(replicas)).toThrow(message);
+  });
+
+  it("allows CPU utilization targets greater than 100", () => {
+    const yaml = render({ min: 1, max: 3, targetCpu: 200 })
+      ?.artifacts[0]?.contents;
+    expect(yaml).toContain("averageUtilization: 200");
+  });
+
+  it("rejects Ref-resolved HPA semantics after world resolution", () => {
+    const producer = defineComponent({
+      outputs: h.object({ min: h.number(), max: h.number(), cpu: h.number() }),
+      build: () => ({ min: 2, max: 1, cpu: 70 }),
+    });
+    const consumer = defineComponent({
+      outputs: h.object({ api: h.url() }),
+      build: (ctx) => {
+        const service = ctx.namespace("consumer").service("api", {
+          targetPort: 8080,
+          replicas: {
+            min: producer.min,
+            max: producer.max,
+            targetCpu: producer.cpu,
+          },
+          resources: { requests: { cpu: "50m" } },
+        });
+        return { api: service.url };
+      },
+    });
+
+    let caught: unknown;
+    try {
+      evaluateWorld({
+        requestedEnv: { kind: "dev" },
+        components: [
+          ["producer", producer],
+          ["consumer", consumer],
+        ].map(([name, component]) => ({
+          name: name as string,
+          component: component as ReturnType<typeof defineComponent>,
+          origin: {
+            componentPackage: `@henosis/${name as string}`,
+            componentPath: `/${name as string}/src/index.ts`,
+            platformPath: "/platform-k8s",
+          },
+          image: { ref: `${name as string}-ref`, digest },
+        })),
+        dependencies: { producer: [], consumer: ["producer"] },
+        changed: ["producer", "consumer"],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PipelineError);
+    expect((caught as PipelineError).failure).toMatchObject({
+      stage: "world-validation",
+      issues: [
+        {
+          code: "k8s.hpa-invalid",
+          component: "consumer",
+          message: "replicas.min must not exceed replicas.max",
+          record: { path: "/spec/maxReplicas" },
+        },
+      ],
+    });
   });
 
   it("pins Kubernetes schema validation to the declared target", () => {
