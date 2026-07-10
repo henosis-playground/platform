@@ -29,7 +29,9 @@ export async function enrichGateFailures(
   return Promise.all(
     failures.map(async (failure) => {
       const inferredProducer =
-        failure.producer === "unknown" && failure.consumer !== "unknown"
+        failure.kind === "resolve" &&
+        failure.producer === "unknown" &&
+        failure.consumer !== "unknown"
           ? await inferAbsentProducer(
               opts.scratchDir,
               failure.consumer,

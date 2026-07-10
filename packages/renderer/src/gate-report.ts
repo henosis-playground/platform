@@ -36,7 +36,9 @@ export function parseCompileFailures(
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    const fieldMatch = /Property '([^']+)' does not exist on type/.exec(line);
+    const fieldMatch = /Property '([^']+)' (?:does not exist on type|is missing in type)/.exec(
+      line,
+    );
     if (fieldMatch === null) {
       continue;
     }
@@ -46,7 +48,9 @@ export function parseCompileFailures(
     const component = filePath === undefined ? undefined : componentFromPath(filePath);
     const consumer = component ?? firstConsumerWithDependency(graph) ?? "unknown";
     const producer = firstProducerForConsumer(graph, consumer) ?? "unknown";
-    const message = `${consumer} consumes ${producer}.${field} which no longer exists`;
+    const message = line.includes(" is missing in type")
+      ? `${consumer} is missing required field ${field}`
+      : `${consumer} consumes ${producer}.${field} which no longer exists`;
     failures.push(contractFailure({
       consumer,
       producer,
@@ -107,7 +111,7 @@ export function pipelineFailures(
           consumer: issue.component,
           producer: "unknown",
           kind: "validate",
-          message: issue.message,
+          message: structuredIssueMessage(issue),
           excerpt: JSON.stringify(issue),
           consumedPaths:
             issue.record === undefined ? [] : [issue.record.path],
@@ -157,7 +161,7 @@ export function withFailureContext(
     ...failure,
     message:
       environmentName !== undefined && failure.kind === "render"
-        ? `${failure.message} (environment: ${environmentName})`
+        ? `${failure.message} (environment: ${environmentName}; stage: ${stage})`
         : failure.message,
     excerpt: [
       ...(environmentName === undefined
@@ -167,6 +171,13 @@ export function withFailureContext(
       failure.excerpt,
     ].join("\n"),
   }));
+}
+
+function structuredIssueMessage(
+  issue: NonNullable<PipelineFailure["issues"]>[number],
+): string {
+  const location = issue.record?.path;
+  return `${issue.message} [${issue.code}${location === undefined ? "" : ` at ${location}`}]`;
 }
 
 /** Creates a renderer-scoped bot-compatible failure. */

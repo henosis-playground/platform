@@ -251,7 +251,10 @@ describe("worker execution and render publication", () => {
       },
     ]);
     const [reported] = pipelineFailures(failure!, { kind: "prod" });
-    expect(reported?.message).toBe("prod is forbidden by this test policy");
+    expect(reported?.message).toBe(
+      "prod is forbidden by this test policy [test.invalid-environment at /environment]",
+    );
+    expect(reported?.producer).toBe("unknown");
     expect(reported?.excerpt).toContain("Environment: prod");
     expect(reported?.excerpt).toContain("Pipeline stage: world-validation");
     expect(reported?.excerpt).toContain(JSON.stringify(failure?.issues?.[0]));

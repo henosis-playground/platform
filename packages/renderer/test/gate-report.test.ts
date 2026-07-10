@@ -53,6 +53,18 @@ describe("parseCompileFailures", () => {
     });
   });
 
+  it("attributes a missing required field to the component source", () => {
+    const output = "../../node_modules/@henosis/service-a/src/index.ts(12,9): error TS2345: Property 'resources' is missing in type '{ targetPort: number; }' but required in type 'ServiceSpec'.";
+
+    expect(parseCompileFailures(output, { "service-a": [] })[0]).toMatchObject({
+      consumer: "service-a",
+      producer: "unknown",
+      kind: "compile",
+      message: "service-a is missing required field resources",
+      consumedPaths: ["resources"],
+    });
+  });
+
   it("keeps self-contract messages parser-compatible and moves context to the excerpt", () => {
     const [failure] = pipelineFailures(
       {

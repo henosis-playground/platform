@@ -29,7 +29,8 @@ describe("widened merge gate", () => {
     expect(result.report.failures[0]).toMatchObject({
       consumer: "service-a",
       kind: "render",
-      message: "replicas.min must not exceed replicas.max (environment: prod)",
+      message:
+        "replicas.min must not exceed replicas.max (environment: prod; stage: build)",
     });
     expect(result.report.failures[0]).not.toHaveProperty("stage");
     expect(result.cells[1]?.failures[0]).toMatchObject({
