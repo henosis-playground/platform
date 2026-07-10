@@ -104,6 +104,8 @@ cat > "$build_staging/henosis-runner" <<'EOF'
 #!/bin/sh
 set -eu
 root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PATH="$root/.henosis-bin:$PATH"
+export PATH
 if [ "$#" -eq 0 ]; then
   echo "Usage: henosis-runner <gate|render> [args...]" >&2
   exit 2
@@ -116,7 +118,13 @@ case "$command" in
   *) echo "Unknown Henosis runner command: $command" >&2; exit 2 ;;
 esac
 EOF
+mkdir -p "$build_staging/.henosis-bin"
+cat > "$build_staging/.henosis-bin/pnpm" <<EOF
+#!/bin/sh
+exec corepack "pnpm@$REQUIRED_PNPM_VERSION" "\$@"
+EOF
 chmod +x "$build_staging/henosis-runner"
+chmod +x "$build_staging/.henosis-bin/pnpm"
 
 mv -- "$build_staging" "$cache_dir"
 build_staging=""
