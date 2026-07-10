@@ -2,9 +2,10 @@
 
 This repository is the pnpm monorepo scaffold for the Henosis PoC platform packages.
 
-- `packages/core` publishes `@henosis/core`: typed component definitions, the `h` schema vocabulary, output refs, and the pure evaluation interface consumed by the renderer.
-- `packages/platform-mock` publishes `@henosis/platform-mock`: the zero-capability PoC platform package that components import.
-- `packages/renderer` publishes `@henosis/renderer`: a manifest-driven renderer and gate CLI.
+- `packages/core` publishes `@henosis/core`: the D23 transactional record seam, typed component definitions, environment grammar, definition-identity refs, world resolution, validation, and resolved-record projection.
+- `packages/platform-mock` publishes `@henosis/platform-mock`: the zero-capability test/live-transition platform, including the marked v1 callback adapter.
+- `packages/platform-k8s` publishes `@henosis/platform-k8s`: namespace/service capabilities and deterministic Kubernetes YAML for Deployment, Service, HPA, PDB, and Namespace records.
+- `packages/renderer` publishes `@henosis/renderer`: manifest rendering plus the widened blocking gate matrix and its dev-only kill switch.
 
 Use Node >=22. Enable pnpm through Corepack:
 

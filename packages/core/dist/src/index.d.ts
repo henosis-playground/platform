@@ -15,8 +15,6 @@ export type Environment<StableKind extends string> = {
     readonly kind: "preview";
     readonly id: string;
 };
-/** Backward-compatible short name for {@link Environment}. */
-export type Env<StableKind extends string = string> = Environment<StableKind>;
 /** The erased environment shape used at renderer and worker boundaries. */
 export type RuntimeEnv = {
     readonly kind: string;
@@ -58,10 +56,6 @@ export interface PendingComponentRecord {
     /** Deferred JSON record payload. */
     readonly data: DeferredJsonValue;
 }
-/** Backward-compatible name for a pending component record. */
-export type ComponentRecord = PendingComponentRecord;
-/** Backward-compatible name for a deferred record value. */
-export type ComponentRecordValue = DeferredJsonValue;
 /** A canonical record constructed only by core's world resolver. */
 export interface ResolvedComponentRecord {
     /** Platform-defined record discriminator. */
@@ -264,8 +258,6 @@ export type ParamsByEnvironment<StableKind extends string> = {
 export type ParamsTable<StableKind extends string, Row extends object> = {
     readonly [Kind in StableKind | "preview"]: Row;
 };
-/** Backward-compatible name for a homogeneous parameter table. */
-export type ParamsByEnv<StableKind extends string, Row extends object> = ParamsTable<StableKind, Row>;
 /** Rejects rows outside a platform's stable kinds plus preview. */
 export type ExactParams<StableKind extends string, Rows extends ParamsByEnvironment<StableKind>> = Rows & {
     readonly [Extra in Exclude<keyof Rows, StableKind | "preview">]: never;
@@ -300,10 +292,6 @@ export interface ComponentSpecWithoutParams<StableKind extends string, Context, 
     /** Produces complete outputs. */
     readonly build: (ctx: Context) => BuildValue<InferSchema<Output>>;
 }
-/** Backward-compatible exported name for a params component specification. */
-export type ComponentWithParamsSpec<Output extends ObjectSchema<SchemaShape>, StableKind extends string, Context, Rows extends ParamsByEnvironment<StableKind>> = ComponentSpecWithParams<StableKind, Context, Output, Rows>;
-/** Backward-compatible exported name for a params-free component specification. */
-export type ComponentWithoutParamsSpec<Output extends ObjectSchema<SchemaShape>, StableKind extends string, Context> = ComponentSpecWithoutParams<StableKind, Context, Output>;
 /** Renderer-visible immutable definition stored behind the component symbol. */
 export interface ComponentDefinition<Output extends ObjectSchema<SchemaShape>, StableKind extends string = string> {
     /** Static output contract. */
@@ -323,8 +311,6 @@ export interface DefineComponent<StableKind extends string, Context> {
     /** Defines a component with no params table. */
     <Shape extends SchemaShape>(spec: ComponentSpecWithoutParams<StableKind, Context, ObjectSchema<Shape>>): ComponentModule<ObjectSchema<Shape>>;
 }
-/** Backward-compatible name for the bound component definition helper. */
-export type PlatformDefineComponent<StableKind extends string, Context> = DefineComponent<StableKind, Context>;
 /** Typed facade produced after a platform binds its core contract. */
 export interface PlatformBinding<StableKind extends string, Context> {
     /** Ordered stable kinds supported by this platform. */
@@ -336,8 +322,6 @@ export interface PlatformBinding<StableKind extends string, Context> {
     /** Formats and validates one platform environment. */
     formatEnvironment(env: Environment<StableKind>): string;
 }
-/** Backward-compatible name for {@link PlatformBinding}. */
-export type Platform<StableKind extends string, Context> = PlatformBinding<StableKind, Context>;
 /** Public output-schema construction vocabulary. */
 export interface SchemaBuilder {
     /** Defines an object schema. */
@@ -560,12 +544,8 @@ export declare function validateAndSortArtifacts(artifacts: readonly ComponentAr
 export declare function compareCodeUnits(left: string, right: string): number;
 /** Formats one canonical stable or preview environment identity. */
 export declare function formatEnvironment<StableKind extends string>(env: Environment<StableKind>): string;
-/** Backward-compatible short environment formatter. */
-export declare function envName(env: RuntimeEnv): string;
 /** Parses the strict stable/TypeID grammar with a marked legacy-preview shim. */
 export declare function parseEnvironmentName<StableKind extends string>(stableKinds: readonly StableKind[], name: string): Environment<StableKind>;
-/** Backward-compatible environment parser with the old argument order. */
-export declare function envFromName<StableKind extends string>(name: string, stableKinds: readonly StableKind[]): Environment<StableKind>;
 /** Validates a programmatic environment against a discovered platform. */
 export declare function assertSupportedEnvironment(stableKinds: readonly string[], env: Environment<string>): void;
 /** Encodes a UUID as one canonical lowercase TypeID. */

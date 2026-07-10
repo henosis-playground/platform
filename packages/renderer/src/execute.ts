@@ -75,7 +75,7 @@ export interface ExecutionResult {
 
 type WorkerInput = {
   mode: "inspect" | "execute";
-  components: Record<string, { ref: string; digest: string }>;
+  components: Record<string, { ref: string; digest: string; follow?: string }>;
   dependencies: Readonly<Record<string, readonly string[]>>;
   requestedEnv: RuntimeEnv;
   changed: readonly string[];
@@ -120,6 +120,8 @@ export async function executeComponents(opts: {
   readonly manifest: EnvironmentManifest;
   /** Dev manifest retained for live follower compatibility. */
   readonly devManifest: EnvironmentManifest;
+  /** Stable manifests available as generalized follower targets. */
+  readonly stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
   /** Installed scratch workspace. */
   readonly scratchDir: string;
   /** Repository root retained for CLI compatibility. */
@@ -135,7 +137,10 @@ export async function executeComponents(opts: {
   void opts.localOverrides;
   const resolved = resolveManifestComponents({
     manifest: opts.manifest,
-    devManifest: opts.devManifest,
+    stableManifests: {
+      dev: opts.devManifest,
+      ...(opts.stableManifests ?? {}),
+    },
   });
   const componentNames = resolved.map((component) => component.name);
   const dependencies = await readComponentDependencyGraph(
@@ -207,11 +212,17 @@ export async function executeComponents(opts: {
 
 function workerComponents(
   components: readonly ResolvedComponent[],
-): Record<string, { ref: string; digest: string }> {
+): Record<string, { ref: string; digest: string; follow?: string }> {
   return Object.fromEntries(
     components.map((component) => [
       component.name,
-      { ref: component.ref, digest: component.digest },
+      {
+        ref: component.ref,
+        digest: component.digest,
+        ...(component.entry.kind === "follower"
+          ? { follow: component.entry.follow }
+          : {}),
+      },
     ]),
   );
 }

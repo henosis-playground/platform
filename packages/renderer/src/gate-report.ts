@@ -1,5 +1,5 @@
 import type { ComponentDependencyGraph, ResolvedComponent } from "./assembler.js";
-import { envName, type RuntimeEnv } from "@henosis/core";
+import { formatEnvironment, type RuntimeEnv } from "@henosis/core";
 import type {
   ExecutionComponent,
   ExecutionResult,
@@ -85,7 +85,9 @@ export function pipelineFailures(
   failure: PipelineFailure,
   environment?: RuntimeEnv,
 ): GateFailure[] {
-  const environmentName = environment === undefined ? undefined : envName(environment);
+  const environmentName = environment === undefined
+    ? undefined
+    : formatEnvironment(environment);
   if (failure.issues !== undefined && failure.issues.length > 0) {
     return failure.issues.map((issue) =>
       contractFailure({
@@ -102,19 +104,23 @@ export function pipelineFailures(
   const kind = failureKind(failure.stage);
   const component = failure.component ?? "world";
   const resolution = resolutionDetails(failure.message);
+  const consumedRef = consumedRefDetails(failure.message);
   const outputPath = outputValidationPath(component, failure.message);
   return [contractFailure({
     consumer: component,
-    producer: resolution?.producer ?? (kind === "validate" ? component : "unknown"),
+    producer:
+      resolution?.producer ??
+      consumedRef?.producer ??
+      (kind === "validate" ? component : "unknown"),
     kind,
     message: prefixEnvironment(failure.message, environmentName),
     excerpt: prefixEnvironment(failure.message, environmentName),
     consumedPaths:
-      resolution?.path === undefined
+      (resolution?.path ?? consumedRef?.path) === undefined
         ? outputPath === undefined
           ? []
           : [outputPath]
-        : [resolution.path],
+        : [resolution?.path ?? consumedRef?.path ?? ""],
   })];
 }
 
@@ -141,7 +147,7 @@ export function formatGateText(opts: {
 }): string {
   const lines = [
     `Henosis gate: ${opts.ok ? "PASS" : "FAIL"}`,
-    `Environment: ${envName(opts.environment)}`,
+    `Environment: ${formatEnvironment(opts.environment)}`,
     "Components:",
     ...opts.components.map(formatComponentSummary),
   ];
@@ -253,6 +259,15 @@ function resolutionDetails(
   message: string,
 ): { producer: string; path: string } | undefined {
   const match = / consumes missing ([a-z0-9-]+)\.([A-Za-z0-9_$.]+)/.exec(message);
+  return match?.[1] === undefined || match[2] === undefined
+    ? undefined
+    : { producer: match[1], path: match[2] };
+}
+
+function consumedRefDetails(
+  message: string,
+): { producer: string; path: string } | undefined {
+  const match = / consumes ([a-z0-9-]+)\.([A-Za-z0-9_$.]+):/.exec(message);
   return match?.[1] === undefined || match[2] === undefined
     ? undefined
     : { producer: match[1], path: match[2] };

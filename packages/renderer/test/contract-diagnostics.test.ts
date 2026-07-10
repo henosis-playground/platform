@@ -142,6 +142,73 @@ importers:
     );
     expect(failure?.pinnedSha).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
+
+  it("attributes an outside-world definition ref to the one absent component dependency", async () => {
+    const scratchDir = await makeScratchWorkspace();
+    await writeComponent(
+      scratchDir,
+      "service-a",
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+        export default defineComponent({
+          outputs: h.object({ api: h.url() }),
+          build: () => ({ api: "https://service-a.example" }),
+        });
+      `,
+    );
+    await writeComponent(
+      scratchDir,
+      "service-b",
+      `
+        import { defineComponent, h } from "@henosis/platform-mock";
+        import serviceA from "@henosis/service-a";
+        export default defineComponent({
+          outputs: h.object({ upstream: h.url() }),
+          build: () => ({ upstream: serviceA.api }),
+        });
+      `,
+      { "@henosis/service-a": "*" },
+    );
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 404 }));
+
+    const [failure] = await enrichGateFailures(
+      [
+        {
+          consumer: "service-b",
+          producer: "unknown",
+          pinnedSha: null,
+          resolvedSha: null,
+          outputsSchemaAtPinned: null,
+          outputsSchemaAtResolved: null,
+          consumedPaths: [],
+          kind: "resolve",
+          message: "service-b contains a ref to api from a component outside this world",
+          excerpt: "service-b contains a ref to api from a component outside this world",
+        },
+      ],
+      {
+        scratchDir,
+        components: [
+          {
+            name: "service-b",
+            packageName: "@henosis/service-b",
+            repo: "henosis-playground/service-b",
+            ref: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            digest: "sha256:service-b",
+            entry: { kind: "pinned" },
+          },
+        ],
+        platformRef: "cccccccccccccccccccccccccccccccccccccccc",
+        localOverrides: {},
+      },
+    );
+
+    expect(failure).toMatchObject({
+      consumer: "service-b",
+      producer: "service-a",
+      consumedPaths: ["api"],
+    });
+  });
 });
 
 async function makeScratchWorkspace(): Promise<string> {
@@ -176,6 +243,7 @@ async function writeComponent(
   scratchDir: string,
   name: string,
   source: string,
+  dependencies: Record<string, string> = {},
 ): Promise<void> {
   const packageDir = path.join(scratchDir, "node_modules", "@henosis", name);
   await mkdir(path.join(packageDir, "src"), { recursive: true });
@@ -191,6 +259,7 @@ async function writeComponent(
         henosis: { component: name },
         dependencies: {
           "@henosis/platform-mock": "*",
+          ...dependencies,
         },
       },
       null,

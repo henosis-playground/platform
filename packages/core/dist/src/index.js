@@ -179,15 +179,29 @@ export function evaluateWorld(plan) {
         ])));
     }
     catch (error) {
-        throw pipelineFailure("resolution", undefined, error);
+        const message = errorMessage(error);
+        const component = plan.components.find(({ name }) => message.startsWith(`${name} `))?.name;
+        throw pipelineFailure("resolution", component, error);
     }
+    const definitionNames = new Map(plan.components.map((component) => [
+        getComponentDefinition(component.component),
+        component.name,
+    ]));
     const validatorComponents = {};
     for (const name of order) {
         const component = required(evaluated.get(name));
         const resolvedComponent = required(resolved.components[name]);
         const outputIssues = validateSchema(component.definition.outputs, resolvedComponent.outputs);
         if (outputIssues.length > 0) {
-            throw pipelineFailure("resolved-output-validation", name, new Error(formatOutputIssue(name, outputIssues[0])));
+            const issue = outputIssues[0];
+            const pendingValue = deferredValueAtPath(component.outputs, issue?.path ?? []);
+            const refSource = isRef(pendingValue)
+                ? definitionNames.get(refSourceDefinition(pendingValue))
+                : undefined;
+            const message = formatOutputIssue(name, issue);
+            throw pipelineFailure("resolved-output-validation", name, new Error(refSource === undefined || !isRef(pendingValue)
+                ? message
+                : `${name} consumes ${refSource}.${refOutputPath(pendingValue).join(".")}: ${message}`));
         }
         validatorComponents[name] = Object.freeze({
             name,
@@ -469,22 +483,17 @@ export function formatEnvironment(env) {
     validateStableKind(env.kind);
     return env.kind;
 }
-/** Backward-compatible short environment formatter. */
-export function envName(env) {
-    return formatEnvironment(env);
-}
 /** Parses the strict stable/TypeID grammar with a marked legacy-preview shim. */
 export function parseEnvironmentName(stableKinds, name) {
     validateAndCopyStableKinds(stableKinds);
     if (stableKinds.includes(name)) {
         return { kind: name };
     }
+    if (!name.startsWith("preview_") && !name.startsWith("preview-")) {
+        throw new Error(`Unknown environment ${JSON.stringify(name)}; expected ${stableKinds.join(", ")} or preview_<typeid>`);
+    }
     assertPreviewEnvironmentName(name);
     return { kind: "preview", id: name };
-}
-/** Backward-compatible environment parser with the old argument order. */
-export function envFromName(name, stableKinds) {
-    return parseEnvironmentName(stableKinds, name);
 }
 /** Validates a programmatic environment against a discovered platform. */
 export function assertSupportedEnvironment(stableKinds, env) {
@@ -634,9 +643,15 @@ function evaluateOne(name, component, effectiveEnv, disposition) {
     catch (error) {
         return abort("build", error);
     }
-    const outputIssues = validateSchema(definition.outputs, outputs, {
-        allowRefs: true,
-    });
+    let outputIssues;
+    try {
+        outputIssues = validateSchema(definition.outputs, outputs, {
+            allowRefs: true,
+        });
+    }
+    catch (error) {
+        return abort("pending-output-validation", error);
+    }
     if (outputIssues.length > 0) {
         return abort("pending-output-validation", new Error(formatOutputIssue(name, outputIssues[0])));
     }
@@ -741,7 +756,7 @@ function resolveDeferredValue(value, consumer, definitionNames, dependencies, re
         const data = value[refSymbol];
         const source = definitionNames.get(data.source);
         if (source === undefined) {
-            throw new Error(`${consumer} contains a ref from a component outside this world`);
+            throw new Error(`${consumer} contains a ref to ${data.path.join(".")} from a component outside this world`);
         }
         dependencies.add(source);
         let current = resolveOutput(source);
@@ -769,6 +784,15 @@ function resolveDeferredValue(value, consumer, definitionNames, dependencies, re
         key,
         resolveDeferredValue(child, consumer, definitionNames, dependencies, resolveOutput),
     ]));
+}
+function deferredValueAtPath(value, pathParts) {
+    let current = value;
+    for (const part of pathParts) {
+        if (!isRecord(current) || !(part in current))
+            return undefined;
+        current = current[part];
+    }
+    return current;
 }
 function makeRefObject(schema, source, prefix) {
     return Object.fromEntries(Object.entries(schema.shape).map(([key, child]) => [

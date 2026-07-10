@@ -308,8 +308,8 @@ describe("platform discovery and environment grammar", () => {
             kind: "preview",
             id: "preview-legacy-42",
         });
-        expect(() => parseEnvironmentName(stableEnvKinds, "staging")).toThrow("Invalid canonical TypeID");
-        expect(() => parseEnvironmentName(stableEnvKinds, representativePreviewName.toUpperCase())).toThrow("Invalid canonical TypeID");
+        expect(() => parseEnvironmentName(stableEnvKinds, "staging")).toThrow("Unknown environment");
+        expect(() => parseEnvironmentName(stableEnvKinds, representativePreviewName.toUpperCase())).toThrow("Unknown environment");
     });
 });
 //# sourceMappingURL=core.test.js.map

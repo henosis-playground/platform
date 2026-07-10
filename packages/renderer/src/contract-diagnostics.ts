@@ -28,41 +28,54 @@ export async function enrichGateFailures(
 
   return Promise.all(
     failures.map(async (failure) => {
-      if (failure.consumer === "unknown" || failure.producer === "unknown") {
-        return failure;
+      const inferredProducer =
+        failure.producer === "unknown" && failure.consumer !== "unknown"
+          ? await inferAbsentProducer(
+              opts.scratchDir,
+              failure.consumer,
+              new Set(components.keys()),
+            )
+          : undefined;
+      const normalized =
+        inferredProducer === undefined
+          ? failure
+          : { ...failure, producer: inferredProducer };
+      if (normalized.consumer === "unknown" || normalized.producer === "unknown") {
+        return normalized;
       }
 
-      const producer = components.get(failure.producer);
-      const consumer = components.get(failure.consumer);
+      const producer = components.get(normalized.producer);
+      const consumer = components.get(normalized.consumer);
       const selfMismatch =
-        failure.kind === "validate" && failure.consumer === failure.producer;
+        normalized.kind === "validate" &&
+        normalized.consumer === normalized.producer;
       const resolvedSha = producer?.ref ?? null;
       const pinnedSha = selfMismatch
         ? null
         : await readPinnedProducerSha({
             scratchDir: opts.scratchDir,
-            consumer: failure.consumer,
-            producer: failure.producer,
+            consumer: normalized.consumer,
+            producer: normalized.producer,
             consumerRepo: consumer?.repo,
             consumerRef: consumer?.ref,
           });
       const consumedPaths = uniqueSorted([
-        ...failure.consumedPaths,
+        ...normalized.consumedPaths,
         ...(selfMismatch
           ? []
           : await inferConsumedPaths(
               opts.scratchDir,
-              failure.consumer,
-              failure.producer,
-              failure.excerpt,
+              normalized.consumer,
+              normalized.producer,
+              normalized.excerpt,
             )),
       ]);
 
       const outputsSchemaAtResolved =
         producer === undefined
           ? null
-          : await schemaFromCache(schemaCache, `installed:${failure.producer}`, () =>
-              extractInstalledOutputSchema(opts.scratchDir, failure.producer),
+          : await schemaFromCache(schemaCache, `installed:${normalized.producer}`, () =>
+              extractInstalledOutputSchema(opts.scratchDir, normalized.producer),
             );
       const outputsSchemaAtPinned =
         producer === undefined || pinnedSha === null
@@ -71,11 +84,11 @@ export async function enrichGateFailures(
             ? outputsSchemaAtResolved
             : await schemaFromCache(
                 schemaCache,
-                `git:${producer.repo}:${failure.producer}:${pinnedSha}`,
+                `git:${producer.repo}:${normalized.producer}:${pinnedSha}`,
                 () =>
                   extractGitOutputSchema({
                     scratchDir: opts.scratchDir,
-                    component: failure.producer,
+                    component: normalized.producer,
                     repo: producer.repo,
                     ref: pinnedSha,
                     platformRef: opts.platformRef,
@@ -84,7 +97,7 @@ export async function enrichGateFailures(
               );
 
       return {
-        ...failure,
+        ...normalized,
         pinnedSha,
         resolvedSha,
         outputsSchemaAtPinned,
@@ -343,7 +356,66 @@ function pathsFromExcerpt(excerpt: string): string[] {
       paths.add(pathName);
     }
   }
+  for (const match of excerpt.matchAll(/ contains a ref to ([A-Za-z0-9_$.]+) /g)) {
+    const pathName = match[1];
+    if (pathName !== undefined) paths.add(pathName);
+  }
   return [...paths];
+}
+
+async function inferAbsentProducer(
+  scratchDir: string,
+  consumer: string,
+  worldComponents: ReadonlySet<string>,
+): Promise<string | undefined> {
+  const packageRoot = path.join(
+    scratchDir,
+    "node_modules",
+    "@henosis",
+    consumer,
+  );
+  let packageJson: unknown;
+  try {
+    packageJson = JSON.parse(
+      await readFile(path.join(packageRoot, "package.json"), "utf8"),
+    );
+  } catch {
+    return undefined;
+  }
+  const dependencies =
+    isRecord(packageJson) && isRecord(packageJson.dependencies)
+      ? packageJson.dependencies
+      : {};
+  const candidates: string[] = [];
+  for (const packageName of Object.keys(dependencies)) {
+    if (!packageName.startsWith("@henosis/")) continue;
+    const name = packageName.slice("@henosis/".length);
+    if (worldComponents.has(name)) continue;
+    try {
+      const dependencyJson: unknown = JSON.parse(
+        await readFile(
+          path.join(
+            scratchDir,
+            "node_modules",
+            "@henosis",
+            name,
+            "package.json",
+          ),
+          "utf8",
+        ),
+      );
+      if (
+        isRecord(dependencyJson) &&
+        isRecord(dependencyJson.henosis) &&
+        typeof dependencyJson.henosis.component === "string"
+      ) {
+        candidates.push(name);
+      }
+    } catch {
+      // Missing/non-component Henosis dependencies are not producer candidates.
+    }
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 async function sourceFiles(dir: string): Promise<string[]> {

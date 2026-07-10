@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  envName,
+  formatEnvironment,
   type ComponentDisposition,
   type JsonValue,
   type ResolvedComponentRecord,
@@ -86,6 +86,8 @@ export async function renderManifest(opts: {
   readonly manifest: EnvironmentManifest;
   /** Current dev manifest for live follower resolution. */
   readonly devManifest: EnvironmentManifest;
+  /** Stable manifests available as generalized follower targets. */
+  readonly stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
   /** Disposable install workspace. */
   readonly scratchDir: string;
   /** Final rendered world directory. */
@@ -100,6 +102,7 @@ export async function renderManifest(opts: {
   const assembly = await assembleWorkspace({
     manifest: opts.manifest,
     devManifest: opts.devManifest,
+    stableManifests: opts.stableManifests,
     scratchDir: opts.scratchDir,
     platformRef: opts.platformRef,
     localOverrides: opts.localOverrides,
@@ -117,6 +120,7 @@ export async function renderManifest(opts: {
     execution = await executeComponents({
       manifest: opts.manifest,
       devManifest: opts.devManifest,
+      stableManifests: opts.stableManifests,
       scratchDir: opts.scratchDir,
       platformRoot: opts.platformRoot,
       localOverrides: opts.localOverrides,
@@ -132,6 +136,7 @@ async function renderGateReportError(
   opts: {
     manifest: EnvironmentManifest;
     devManifest: EnvironmentManifest;
+    stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
     scratchDir: string;
     platformRef: string;
     localOverrides?: LocalOverrides;
@@ -139,7 +144,10 @@ async function renderGateReportError(
 ): Promise<RenderGateReportError> {
   const components = resolveManifestComponents({
     manifest: opts.manifest,
-    devManifest: opts.devManifest,
+    stableManifests: {
+      dev: opts.devManifest,
+      ...(opts.stableManifests ?? {}),
+    },
   });
   const rawFailures =
     error instanceof ExecutionPipelineError
@@ -171,7 +179,7 @@ export async function writeRenderOutput(opts: {
     ([left], [right]) => compareCodeUnits(left, right),
   );
   const manifest: RenderManifest = {
-    environment: envName(opts.execution.env),
+    environment: formatEnvironment(opts.execution.env),
     subscriptions: opts.execution.subscriptions,
     components: Object.fromEntries(
       components.map(([name, component]) => [
@@ -237,7 +245,7 @@ export function formatComponentRenderData(
     ref: component.ref,
     digest: component.digest,
     source: component.source,
-    effectiveEnvironment: envName(component.effectiveEnv),
+    effectiveEnvironment: formatEnvironment(component.effectiveEnv),
     disposition: component.disposition,
     outputs: component.outputs,
     records: component.records,
@@ -316,12 +324,18 @@ async function main(): Promise<void> {
   const manifest = parseManifest(await readFile(manifestPath, "utf8"));
   const devManifestPath = path.join(path.dirname(manifestPath), "dev.toml");
   const devManifest = parseManifest(await readFile(devManifestPath, "utf8"));
+  const stableManifests = await loadFollowerManifests(
+    manifest,
+    path.dirname(manifestPath),
+    devManifest,
+  );
   const scratchDir = await mkdtemp(path.join(os.tmpdir(), "henosis-render-"));
   const platformRoot = defaultPlatformRoot();
   const platformRef = currentPlatformRef(platformRoot);
   const output = await renderManifest({
     manifest,
     devManifest,
+    stableManifests,
     scratchDir,
     outputDir,
     platformRef,
@@ -335,7 +349,7 @@ async function main(): Promise<void> {
     )
     .join(", ");
   console.log(
-    `Rendered ${envName(manifest.environment)} (${renderedNames}) to ${outputDir}`,
+    `Rendered ${formatEnvironment(manifest.environment)} (${renderedNames}) to ${outputDir}`,
   );
   if (renderedPins.length > 0) console.log(`Rendered pins: ${renderedPins}`);
 }
@@ -364,6 +378,26 @@ function parseLocalOverrides(args: readonly string[]): LocalOverrides {
     overrides[value.slice(0, separator)] = value.slice(separator + 1);
   }
   return overrides;
+}
+
+async function loadFollowerManifests(
+  manifest: EnvironmentManifest,
+  directory: string,
+  devManifest: EnvironmentManifest,
+): Promise<Readonly<Record<string, EnvironmentManifest>>> {
+  const result: Record<string, EnvironmentManifest> = { dev: devManifest };
+  const targets = new Set(
+    Object.values(manifest.components).flatMap((entry) =>
+      entry.kind === "follower" ? [entry.follow] : [],
+    ),
+  );
+  for (const target of [...targets].sort(compareCodeUnits)) {
+    if (target === "dev") continue;
+    result[target] = parseManifest(
+      await readFile(path.join(directory, `${target}.toml`), "utf8"),
+    );
+  }
+  return result;
 }
 
 function compareCodeUnits(left: string, right: string): number {

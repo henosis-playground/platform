@@ -26,9 +26,6 @@ export type Environment<StableKind extends string> =
   | { readonly kind: StableKind }
   | { readonly kind: "preview"; readonly id: string };
 
-/** Backward-compatible short name for {@link Environment}. */
-export type Env<StableKind extends string = string> = Environment<StableKind>;
-
 /** The erased environment shape used at renderer and worker boundaries. */
 export type RuntimeEnv =
   | { readonly kind: string }
@@ -82,12 +79,6 @@ export interface PendingComponentRecord {
   /** Deferred JSON record payload. */
   readonly data: DeferredJsonValue;
 }
-
-/** Backward-compatible name for a pending component record. */
-export type ComponentRecord = PendingComponentRecord;
-
-/** Backward-compatible name for a deferred record value. */
-export type ComponentRecordValue = DeferredJsonValue;
 
 /** A canonical record constructed only by core's world resolver. */
 export interface ResolvedComponentRecord {
@@ -329,10 +320,6 @@ export type ParamsTable<StableKind extends string, Row extends object> = {
   readonly [Kind in StableKind | "preview"]: Row;
 };
 
-/** Backward-compatible name for a homogeneous parameter table. */
-export type ParamsByEnv<StableKind extends string, Row extends object> =
-  ParamsTable<StableKind, Row>;
-
 /** Rejects rows outside a platform's stable kinds plus preview. */
 export type ExactParams<
   StableKind extends string,
@@ -385,21 +372,6 @@ export interface ComponentSpecWithoutParams<
   readonly build: (ctx: Context) => BuildValue<InferSchema<Output>>;
 }
 
-/** Backward-compatible exported name for a params component specification. */
-export type ComponentWithParamsSpec<
-  Output extends ObjectSchema<SchemaShape>,
-  StableKind extends string,
-  Context,
-  Rows extends ParamsByEnvironment<StableKind>,
-> = ComponentSpecWithParams<StableKind, Context, Output, Rows>;
-
-/** Backward-compatible exported name for a params-free component specification. */
-export type ComponentWithoutParamsSpec<
-  Output extends ObjectSchema<SchemaShape>,
-  StableKind extends string,
-  Context,
-> = ComponentSpecWithoutParams<StableKind, Context, Output>;
-
 /** Renderer-visible immutable definition stored behind the component symbol. */
 export interface ComponentDefinition<
   Output extends ObjectSchema<SchemaShape>,
@@ -439,10 +411,6 @@ export interface DefineComponent<StableKind extends string, Context> {
   ): ComponentModule<ObjectSchema<Shape>>;
 }
 
-/** Backward-compatible name for the bound component definition helper. */
-export type PlatformDefineComponent<StableKind extends string, Context> =
-  DefineComponent<StableKind, Context>;
-
 /** Typed facade produced after a platform binds its core contract. */
 export interface PlatformBinding<StableKind extends string, Context> {
   /** Ordered stable kinds supported by this platform. */
@@ -454,12 +422,6 @@ export interface PlatformBinding<StableKind extends string, Context> {
   /** Formats and validates one platform environment. */
   formatEnvironment(env: Environment<StableKind>): string;
 }
-
-/** Backward-compatible name for {@link PlatformBinding}. */
-export type Platform<StableKind extends string, Context> = PlatformBinding<
-  StableKind,
-  Context
->;
 
 /** Public output-schema construction vocabulary. */
 export interface SchemaBuilder {
@@ -908,9 +870,19 @@ export function evaluateWorld<StableKind extends string>(
       ),
     );
   } catch (error) {
-    throw pipelineFailure("resolution", undefined, error);
+    const message = errorMessage(error);
+    const component = plan.components.find(({ name }) =>
+      message.startsWith(`${name} `),
+    )?.name;
+    throw pipelineFailure("resolution", component, error);
   }
 
+  const definitionNames = new Map(
+    plan.components.map((component) => [
+      getComponentDefinition(component.component),
+      component.name,
+    ]),
+  );
   const validatorComponents: Record<
     string,
     ResolvedWorldComponent<StableKind>
@@ -923,10 +895,20 @@ export function evaluateWorld<StableKind extends string>(
       resolvedComponent.outputs,
     );
     if (outputIssues.length > 0) {
+      const issue = outputIssues[0];
+      const pendingValue = deferredValueAtPath(component.outputs, issue?.path ?? []);
+      const refSource = isRef(pendingValue)
+        ? definitionNames.get(refSourceDefinition(pendingValue))
+        : undefined;
+      const message = formatOutputIssue(name, issue);
       throw pipelineFailure(
         "resolved-output-validation",
         name,
-        new Error(formatOutputIssue(name, outputIssues[0])),
+        new Error(
+          refSource === undefined || !isRef(pendingValue)
+            ? message
+            : `${name} consumes ${refSource}.${refOutputPath(pendingValue).join(".")}: ${message}`,
+        ),
       );
     }
     validatorComponents[name] = Object.freeze({
@@ -1300,11 +1282,6 @@ export function formatEnvironment<StableKind extends string>(
   return env.kind;
 }
 
-/** Backward-compatible short environment formatter. */
-export function envName(env: RuntimeEnv): string {
-  return formatEnvironment(env as Environment<string>);
-}
-
 /** Parses the strict stable/TypeID grammar with a marked legacy-preview shim. */
 export function parseEnvironmentName<StableKind extends string>(
   stableKinds: readonly StableKind[],
@@ -1314,16 +1291,13 @@ export function parseEnvironmentName<StableKind extends string>(
   if (stableKinds.includes(name as StableKind)) {
     return { kind: name as StableKind };
   }
+  if (!name.startsWith("preview_") && !name.startsWith("preview-")) {
+    throw new Error(
+      `Unknown environment ${JSON.stringify(name)}; expected ${stableKinds.join(", ")} or preview_<typeid>`,
+    );
+  }
   assertPreviewEnvironmentName(name);
   return { kind: "preview", id: name };
-}
-
-/** Backward-compatible environment parser with the old argument order. */
-export function envFromName<StableKind extends string>(
-  name: string,
-  stableKinds: readonly StableKind[],
-): Environment<StableKind> {
-  return parseEnvironmentName(stableKinds, name);
 }
 
 /** Validates a programmatic environment against a discovered platform. */
@@ -1509,9 +1483,14 @@ function evaluateOne<StableKind extends string>(
     return abort("build", error);
   }
 
-  const outputIssues = validateSchema(definition.outputs, outputs, {
-    allowRefs: true,
-  });
+  let outputIssues: OutputValidationIssue[];
+  try {
+    outputIssues = validateSchema(definition.outputs, outputs, {
+      allowRefs: true,
+    });
+  } catch (error) {
+    return abort("pending-output-validation", error);
+  }
   if (outputIssues.length > 0) {
     return abort(
       "pending-output-validation",
@@ -1655,7 +1634,7 @@ function resolveDeferredValue(
     const source = definitionNames.get(data.source);
     if (source === undefined) {
       throw new Error(
-        `${consumer} contains a ref from a component outside this world`,
+        `${consumer} contains a ref to ${data.path.join(".")} from a component outside this world`,
       );
     }
     dependencies.add(source);
@@ -1704,6 +1683,18 @@ function resolveDeferredValue(
       ),
     ]),
   );
+}
+
+function deferredValueAtPath(
+  value: DeferredJsonValue,
+  pathParts: readonly string[],
+): DeferredJsonValue | undefined {
+  let current: DeferredJsonValue | undefined = value;
+  for (const part of pathParts) {
+    if (!isRecord(current) || !(part in current)) return undefined;
+    current = current[part] as DeferredJsonValue;
+  }
+  return current;
 }
 
 function makeRefObject(

@@ -394,10 +394,10 @@ describe("platform discovery and environment grammar", () => {
       id: "preview-legacy-42",
     });
     expect(() => parseEnvironmentName(stableEnvKinds, "staging")).toThrow(
-      "Invalid canonical TypeID",
+      "Unknown environment",
     );
     expect(() =>
       parseEnvironmentName(stableEnvKinds, representativePreviewName.toUpperCase()),
-    ).toThrow("Invalid canonical TypeID");
+    ).toThrow("Unknown environment");
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { representativePreviewName } from "@henosis/core";
 import { parseManifest } from "../src/manifest.js";
+import { resolveManifestComponents } from "../src/assembler.js";
 
 describe("parseManifest", () => {
   it("parses pinned component entries", () => {
@@ -54,6 +55,38 @@ describe("parseManifest", () => {
         "service-b": { kind: "follower", follow: "prod" },
       },
     });
+  });
+
+  it("resolves a prod follower against the supplied prod manifest", () => {
+    const preview = parseManifest(`
+      [environment]
+      id = "${representativePreviewName}"
+      [components.service-a]
+      follow = "prod"
+    `);
+    const prod = parseManifest(`
+      [environment]
+      id = "prod"
+      [components.service-a]
+      repo = "henosis-playground/service-a"
+      ref = "prod-ref"
+      digest = "sha256:prod"
+    `);
+    expect(
+      resolveManifestComponents({
+        manifest: preview,
+        stableManifests: { prod },
+      }),
+    ).toEqual([
+      {
+        name: "service-a",
+        packageName: "@henosis/service-a",
+        repo: "henosis-playground/service-a",
+        ref: "prod-ref",
+        digest: "sha256:prod",
+        entry: { kind: "follower", follow: "prod" },
+      },
+    ]);
   });
 
   it("rejects malformed preview identities instead of treating them as names", () => {

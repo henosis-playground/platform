@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
   PipelineError,
-  envName,
+  formatEnvironment,
   evaluateWorld,
   inspectWorldPlatform,
   isComponentModule,
@@ -25,6 +25,7 @@ import {
 type WorkerComponentInfo = {
   ref: string;
   digest: string;
+  follow?: string;
 };
 
 type WorkerInput = {
@@ -82,10 +83,27 @@ async function run(): Promise<WorkerOutput> {
   }
   if (input.mode === "inspect") return { ok: true, platform };
 
+  for (const [name, component] of Object.entries(input.components)) {
+    if (
+      component.follow !== undefined &&
+      !platform.stableEnvKinds.includes(component.follow)
+    ) {
+      return {
+        ok: false,
+        platform,
+        failure: {
+          stage: "environment-validation",
+          component: name,
+          message: `Unsupported follow target ${component.follow}`,
+        },
+      };
+    }
+  }
+
   try {
     const requestedEnv = parseEnvironmentName(
       platform.stableEnvKinds,
-      envName(input.requestedEnv),
+      formatEnvironment(input.requestedEnv),
     );
     const importedByName = new Map(
       imported.map((component) => [component.name, component]),
@@ -208,7 +226,11 @@ function parseInput(source: string): WorkerInput {
     ) {
       throw new Error(`Invalid worker component ${name}`);
     }
-    components[name] = { ref: value.ref, digest: value.digest };
+    components[name] = {
+      ref: value.ref,
+      digest: value.digest,
+      ...(typeof value.follow === "string" ? { follow: value.follow } : {}),
+    };
   }
   const dependencies: Record<string, readonly string[]> = {};
   for (const [name, value] of Object.entries(parsed.dependencies)) {

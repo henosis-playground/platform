@@ -72,12 +72,18 @@ export interface GateRunResult {
 export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
   const manifest = parseManifest(await readFile(opts.manifestPath, "utf8"));
   const devManifest = parseManifest(await readFile(opts.devManifestPath, "utf8"));
+  const stableManifests = await loadFollowerManifests(
+    manifest,
+    path.dirname(opts.manifestPath),
+    devManifest,
+  );
   const platformRoot = defaultPlatformRoot();
   const platformRef = currentPlatformRef(platformRoot);
-  const components = resolveManifestComponents({ manifest, devManifest });
+  const components = resolveManifestComponents({ manifest, stableManifests });
   const assembly = await assembleWorkspace({
     manifest,
     devManifest,
+    stableManifests,
     scratchDir: opts.scratchDir,
     platformRef,
     localOverrides: opts.localOverrides,
@@ -146,6 +152,7 @@ export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
       const execution = await executeComponents({
         manifest,
         devManifest,
+        stableManifests,
         scratchDir: opts.scratchDir,
         platformRoot,
         localOverrides: opts.localOverrides,
@@ -257,6 +264,26 @@ function inferChangedComponents(
     })
     .map(([name]) => name)
     .sort(compareCodeUnits);
+}
+
+async function loadFollowerManifests(
+  manifest: EnvironmentManifest,
+  directory: string,
+  devManifest: EnvironmentManifest,
+): Promise<Readonly<Record<string, EnvironmentManifest>>> {
+  const result: Record<string, EnvironmentManifest> = { dev: devManifest };
+  const targets = new Set(
+    Object.values(manifest.components).flatMap((entry) =>
+      entry.kind === "follower" ? [entry.follow] : [],
+    ),
+  );
+  for (const target of [...targets].sort(compareCodeUnits)) {
+    if (target === "dev") continue;
+    result[target] = parseManifest(
+      await readFile(path.join(directory, `${target}.toml`), "utf8"),
+    );
+  }
+  return result;
 }
 
 function formatMatrixText(

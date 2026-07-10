@@ -227,7 +227,7 @@ async function writeTestPlatform(
     `
       import {
         definePlatform,
-        envName,
+        formatEnvironment,
         h,
         type BuildContext as CoreBuildContext,
         type Environment,
@@ -252,7 +252,7 @@ async function writeTestPlatform(
         }),
         finishRecords: (ctx, records) => records.write({
           kind: "environment",
-          data: { environment: envName(ctx.env) },
+          data: { environment: formatEnvironment(ctx.env) },
         }),
         project: ({ records }) => [{
           path: "records.json",
@@ -273,7 +273,8 @@ async function writeTestPlatform(
         }]` : "[]"},
       });
       export const defineComponent = platform.defineComponent;
-      export { envName, h };
+      export { h };
+      export const envName = platform.formatEnvironment;
     `,
   );
 }

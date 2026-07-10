@@ -39,6 +39,7 @@ export type ComponentDependencyGraph = Record<string, string[]>;
 export async function assembleWorkspace(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
+  stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
   scratchDir: string;
   platformRef: string;
   localOverrides?: LocalOverrides;
@@ -46,7 +47,10 @@ export async function assembleWorkspace(opts: {
   try {
     const resolved = resolveManifestComponents({
       manifest: opts.manifest,
-      devManifest: opts.devManifest,
+      stableManifests: {
+        dev: opts.devManifest,
+        ...(opts.stableManifests ?? {}),
+      },
     });
 
     await writeScratchWorkspace({
@@ -110,6 +114,7 @@ export async function checkWorkspaceTypes(opts: {
 export async function assembleAndCheck(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
+  stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
   scratchDir: string;
   platformRef: string;
   localOverrides?: LocalOverrides;

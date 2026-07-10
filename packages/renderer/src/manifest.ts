@@ -1,6 +1,6 @@
 import { parse } from "smol-toml";
 import {
-  envName,
+  formatEnvironment,
   parseEnvironmentName,
   type RuntimeEnv,
 } from "@henosis/core";
@@ -127,7 +127,7 @@ function parseComponentEntry(
 
     if (manifestEnv.kind !== "preview") {
       throw new Error(
-        `Invalid component "${componentName}": follower entries are invalid in ${envName(manifestEnv)}`,
+        `Invalid component "${componentName}": follower entries are invalid in ${formatEnvironment(manifestEnv)}`,
       );
     }
 
