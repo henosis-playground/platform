@@ -499,7 +499,12 @@ export interface WorldPlan<StableKind extends string = string> {
   readonly dependencies: Readonly<Record<string, readonly string[]>>;
   /** Preview members changed by this manifest or gate candidate. */
   readonly changed: readonly string[];
-  /** Optional organization policy checks. */
+  /**
+   * Optional in-process organization policy checks.
+   *
+   * A worker-boundary loading mechanism is deferred until the first policy
+   * check exists.
+   */
   readonly policyValidators?: readonly WorldValidator<StableKind>[];
 }
 
@@ -1198,12 +1203,15 @@ export function runWorldValidators<StableKind extends string>(
       }
       for (const issue of issues) {
         assertValidationIssue(issue, world);
-        collected.push({
+        collected.push(Object.freeze({
           ...issue,
+          ...(issue.record === undefined
+            ? {}
+            : { record: Object.freeze({ ...issue.record }) }),
           validator: validator.id,
           source,
           validatorOrder,
-        });
+        }));
       }
       validatorOrder += 1;
     }
@@ -1212,18 +1220,21 @@ export function runWorldValidators<StableKind extends string>(
   collected.sort(
     (left, right) =>
       left.validatorOrder - right.validatorOrder ||
+      compareCodeUnits(left.source, right.source) ||
+      compareCodeUnits(left.validator, right.validator) ||
       compareCodeUnits(left.component, right.component) ||
       (left.record?.index ?? -1) - (right.record?.index ?? -1) ||
       compareCodeUnits(left.record?.path ?? "", right.record?.path ?? "") ||
       compareCodeUnits(left.code, right.code) ||
-      compareCodeUnits(left.message, right.message),
+      compareCodeUnits(left.message, right.message) ||
+      compareCodeUnits(left.help ?? "", right.help ?? ""),
   );
 
   const result: ReportedValidationIssue[] = [];
   const seen = new Set<string>();
   for (const { validatorOrder: ignored, ...issue } of collected) {
     void ignored;
-    const key = JSON.stringify(issue);
+    const key = canonicalIssueKey(issue);
     if (!seen.has(key)) {
       seen.add(key);
       result.push(Object.freeze(issue));
@@ -1316,9 +1327,14 @@ export function assertSupportedEnvironment(
   }
 }
 
-/** Encodes a UUID as one canonical lowercase TypeID. */
+/**
+ * Encodes a UUID as a Henosis environment id in canonical TypeID format.
+ *
+ * Henosis environments always carry a non-empty prefix, so the general
+ * TypeID empty-prefix form is deliberately rejected by this helper.
+ */
 export function typeIdFromUuid(prefix: string, uuid: string): string {
-  if (!/^[a-z](?:[a-z0-9_]{0,61}[a-z0-9])?$/.test(prefix)) {
+  if (!/^[a-z](?:[a-z_]{0,61}[a-z])?$/.test(prefix)) {
     throw new Error(`Invalid TypeID prefix ${JSON.stringify(prefix)}`);
   }
   const match =
@@ -1338,13 +1354,18 @@ export function typeIdFromUuid(prefix: string, uuid: string): string {
   return `${prefix}_${suffix}`;
 }
 
-/** Decodes a canonical TypeID and returns its lowercase UUID. */
+/**
+ * Decodes a canonical Henosis environment id and returns its lowercase UUID.
+ *
+ * The general TypeID empty-prefix form is intentionally unsupported because
+ * Henosis environment identities always have a non-empty type prefix.
+ */
 export function uuidFromTypeId(typeId: string, expectedPrefix?: string): string {
   const separator = typeId.lastIndexOf("_");
   const prefix = separator === -1 ? "" : typeId.slice(0, separator);
   const suffix = separator === -1 ? "" : typeId.slice(separator + 1);
   if (
-    !/^[a-z](?:[a-z0-9_]{0,61}[a-z0-9])?$/.test(prefix) ||
+    !/^[a-z](?:[a-z_]{0,61}[a-z])?$/.test(prefix) ||
     suffix.length !== 26 ||
     !/^[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(suffix) ||
     (expectedPrefix !== undefined && prefix !== expectedPrefix)
@@ -1504,6 +1525,12 @@ function evaluateOne<StableKind extends string>(
     return abort("finish-records", error);
   }
 
+  let pendingOutputs: DeferredJsonValue;
+  try {
+    pendingOutputs = snapshotDeferredValue(outputs as DeferredJsonValue);
+  } catch (error) {
+    return abort("pending-output-validation", error);
+  }
   const records = sink.seal();
   try {
     runtime.descriptor.dispose?.(context, { status: "sealed" });
@@ -1515,7 +1542,7 @@ function evaluateOne<StableKind extends string>(
     definition,
     effectiveEnv,
     disposition,
-    outputs: outputs as DeferredJsonValue,
+    outputs: pendingOutputs,
     records,
   });
 }
@@ -1529,10 +1556,12 @@ class TransactionalRecordSink implements RecordSink {
     if (typeof record.kind !== "string" || record.kind.length === 0) {
       throw new Error("Record kind must be a non-empty string");
     }
-    this.#records.push(Object.freeze({
-      kind: record.kind,
-      data: record.data,
-    }));
+    this.#records.push(
+      Object.freeze({
+        kind: record.kind,
+        data: snapshotDeferredValue(record.data),
+      }),
+    );
   }
 
   assertOpen(): void {
@@ -1584,10 +1613,10 @@ function discoverDescriptor(
       stage: "platform-discovery",
       component: component.name,
       message:
-        `${problem}: ${formatIdentity(descriptor.identity)} at ` +
-        `${first.origin.platformPath} (${first.name}) vs ` +
-        `${formatIdentity(candidate.identity)} at ` +
-        `${component.origin.platformPath} (${component.name})`,
+        `${problem}: component ${first.name} carries ` +
+        `${formatIdentity(descriptor.identity)} at ${first.origin.platformPath}; ` +
+        `component ${component.name} carries ${formatIdentity(candidate.identity)} ` +
+        `at ${component.origin.platformPath}`,
     });
   }
   return descriptor;
@@ -1658,31 +1687,74 @@ function resolveDeferredValue(
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((child) =>
-      resolveDeferredValue(
-        child,
-        consumer,
-        definitionNames,
-        dependencies,
-        resolveOutput,
+    return Object.freeze(
+      value.map((child) =>
+        resolveDeferredValue(
+          child,
+          consumer,
+          definitionNames,
+          dependencies,
+          resolveOutput,
+        ),
       ),
     );
   }
   if (!isRecord(value)) {
     throw new Error(`${consumer} emitted non-JSON data`);
   }
-  return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [
-      key,
-      resolveDeferredValue(
-        child as DeferredJsonValue,
-        consumer,
-        definitionNames,
-        dependencies,
-        resolveOutput,
-      ),
-    ]),
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [
+        key,
+        resolveDeferredValue(
+          child as DeferredJsonValue,
+          consumer,
+          definitionNames,
+          dependencies,
+          resolveOutput,
+        ),
+      ]),
+    ),
   );
+}
+
+function snapshotDeferredValue(
+  value: DeferredJsonValue,
+  ancestors: Set<object> = new Set(),
+): DeferredJsonValue {
+  if (isRef(value)) return value;
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value !== "object") {
+    throw new Error("Platform record data must be deferred JSON");
+  }
+  if (ancestors.has(value)) {
+    throw new Error("Platform record data must not contain cycles");
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return Object.freeze(
+        value.map((child) => snapshotDeferredValue(child, ancestors)),
+      );
+    }
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, child]) => [
+          key,
+          snapshotDeferredValue(child, ancestors),
+        ]),
+      ),
+    );
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
 function deferredValueAtPath(
@@ -1874,6 +1946,19 @@ function brandResolvedRecord(record: {
   readonly data: JsonValue;
 }): ResolvedComponentRecord {
   return Object.freeze(record) as ResolvedComponentRecord;
+}
+
+function canonicalIssueKey(issue: ReportedValidationIssue): string {
+  return JSON.stringify([
+    issue.source,
+    issue.validator,
+    issue.component,
+    issue.record?.index ?? null,
+    issue.record?.path ?? null,
+    issue.code,
+    issue.message,
+    issue.help ?? null,
+  ]);
 }
 
 function assertValidationIssue<StableKind extends string>(

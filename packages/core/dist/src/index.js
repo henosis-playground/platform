@@ -419,27 +419,33 @@ export function runWorldValidators(world, platformValidators, policyValidators) 
             }
             for (const issue of issues) {
                 assertValidationIssue(issue, world);
-                collected.push({
+                collected.push(Object.freeze({
                     ...issue,
+                    ...(issue.record === undefined
+                        ? {}
+                        : { record: Object.freeze({ ...issue.record }) }),
                     validator: validator.id,
                     source,
                     validatorOrder,
-                });
+                }));
             }
             validatorOrder += 1;
         }
     }
     collected.sort((left, right) => left.validatorOrder - right.validatorOrder ||
+        compareCodeUnits(left.source, right.source) ||
+        compareCodeUnits(left.validator, right.validator) ||
         compareCodeUnits(left.component, right.component) ||
         (left.record?.index ?? -1) - (right.record?.index ?? -1) ||
         compareCodeUnits(left.record?.path ?? "", right.record?.path ?? "") ||
         compareCodeUnits(left.code, right.code) ||
-        compareCodeUnits(left.message, right.message));
+        compareCodeUnits(left.message, right.message) ||
+        compareCodeUnits(left.help ?? "", right.help ?? ""));
     const result = [];
     const seen = new Set();
     for (const { validatorOrder: ignored, ...issue } of collected) {
         void ignored;
-        const key = JSON.stringify(issue);
+        const key = canonicalIssueKey(issue);
         if (!seen.has(key)) {
             seen.add(key);
             result.push(Object.freeze(issue));
@@ -505,9 +511,14 @@ export function assertSupportedEnvironment(stableKinds, env) {
         throw new Error(`Unsupported stable environment ${JSON.stringify(env.kind)}; platform supports ${stableKinds.join(", ")}`);
     }
 }
-/** Encodes a UUID as one canonical lowercase TypeID. */
+/**
+ * Encodes a UUID as a Henosis environment id in canonical TypeID format.
+ *
+ * Henosis environments always carry a non-empty prefix, so the general
+ * TypeID empty-prefix form is deliberately rejected by this helper.
+ */
 export function typeIdFromUuid(prefix, uuid) {
-    if (!/^[a-z](?:[a-z0-9_]{0,61}[a-z0-9])?$/.test(prefix)) {
+    if (!/^[a-z](?:[a-z_]{0,61}[a-z])?$/.test(prefix)) {
         throw new Error(`Invalid TypeID prefix ${JSON.stringify(prefix)}`);
     }
     const match = /^([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-([0-9a-fA-F]{4})-([0-9a-fA-F]{4})-([0-9a-fA-F]{12})$/.exec(uuid);
@@ -523,12 +534,17 @@ export function typeIdFromUuid(prefix, uuid) {
     }
     return `${prefix}_${suffix}`;
 }
-/** Decodes a canonical TypeID and returns its lowercase UUID. */
+/**
+ * Decodes a canonical Henosis environment id and returns its lowercase UUID.
+ *
+ * The general TypeID empty-prefix form is intentionally unsupported because
+ * Henosis environment identities always have a non-empty type prefix.
+ */
 export function uuidFromTypeId(typeId, expectedPrefix) {
     const separator = typeId.lastIndexOf("_");
     const prefix = separator === -1 ? "" : typeId.slice(0, separator);
     const suffix = separator === -1 ? "" : typeId.slice(separator + 1);
-    if (!/^[a-z](?:[a-z0-9_]{0,61}[a-z0-9])?$/.test(prefix) ||
+    if (!/^[a-z](?:[a-z_]{0,61}[a-z])?$/.test(prefix) ||
         suffix.length !== 26 ||
         !/^[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(suffix) ||
         (expectedPrefix !== undefined && prefix !== expectedPrefix)) {
@@ -661,6 +677,13 @@ function evaluateOne(name, component, effectiveEnv, disposition) {
     catch (error) {
         return abort("finish-records", error);
     }
+    let pendingOutputs;
+    try {
+        pendingOutputs = snapshotDeferredValue(outputs);
+    }
+    catch (error) {
+        return abort("pending-output-validation", error);
+    }
     const records = sink.seal();
     try {
         runtime.descriptor.dispose?.(context, { status: "sealed" });
@@ -672,7 +695,7 @@ function evaluateOne(name, component, effectiveEnv, disposition) {
         definition,
         effectiveEnv,
         disposition,
-        outputs: outputs,
+        outputs: pendingOutputs,
         records,
     });
 }
@@ -686,7 +709,7 @@ class TransactionalRecordSink {
         }
         this.#records.push(Object.freeze({
             kind: record.kind,
-            data: record.data,
+            data: snapshotDeferredValue(record.data),
         }));
     }
     assertOpen() {
@@ -728,10 +751,10 @@ function discoverDescriptor(components) {
         throw new PipelineError({
             stage: "platform-discovery",
             component: component.name,
-            message: `${problem}: ${formatIdentity(descriptor.identity)} at ` +
-                `${first.origin.platformPath} (${first.name}) vs ` +
-                `${formatIdentity(candidate.identity)} at ` +
-                `${component.origin.platformPath} (${component.name})`,
+            message: `${problem}: component ${first.name} carries ` +
+                `${formatIdentity(descriptor.identity)} at ${first.origin.platformPath}; ` +
+                `component ${component.name} carries ${formatIdentity(candidate.identity)} ` +
+                `at ${component.origin.platformPath}`,
         });
     }
     return descriptor;
@@ -775,15 +798,44 @@ function resolveDeferredValue(value, consumer, definitionNames, dependencies, re
         return value;
     }
     if (Array.isArray(value)) {
-        return value.map((child) => resolveDeferredValue(child, consumer, definitionNames, dependencies, resolveOutput));
+        return Object.freeze(value.map((child) => resolveDeferredValue(child, consumer, definitionNames, dependencies, resolveOutput)));
     }
     if (!isRecord(value)) {
         throw new Error(`${consumer} emitted non-JSON data`);
     }
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [
         key,
         resolveDeferredValue(child, consumer, definitionNames, dependencies, resolveOutput),
-    ]));
+    ])));
+}
+function snapshotDeferredValue(value, ancestors = new Set()) {
+    if (isRef(value))
+        return value;
+    if (value === null ||
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean") {
+        return value;
+    }
+    if (typeof value !== "object") {
+        throw new Error("Platform record data must be deferred JSON");
+    }
+    if (ancestors.has(value)) {
+        throw new Error("Platform record data must not contain cycles");
+    }
+    ancestors.add(value);
+    try {
+        if (Array.isArray(value)) {
+            return Object.freeze(value.map((child) => snapshotDeferredValue(child, ancestors)));
+        }
+        return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, child]) => [
+            key,
+            snapshotDeferredValue(child, ancestors),
+        ])));
+    }
+    finally {
+        ancestors.delete(value);
+    }
 }
 function deferredValueAtPath(value, pathParts) {
     let current = value;
@@ -922,6 +974,18 @@ function isOutputRefData(value) {
 }
 function brandResolvedRecord(record) {
     return Object.freeze(record);
+}
+function canonicalIssueKey(issue) {
+    return JSON.stringify([
+        issue.source,
+        issue.validator,
+        issue.component,
+        issue.record?.index ?? null,
+        issue.record?.path ?? null,
+        issue.code,
+        issue.message,
+        issue.help ?? null,
+    ]);
 }
 function assertValidationIssue(issue, world) {
     if (!/^[a-z][a-z0-9.-]*$/.test(issue.code)) {

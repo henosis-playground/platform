@@ -375,7 +375,12 @@ export interface WorldPlan<StableKind extends string = string> {
     readonly dependencies: Readonly<Record<string, readonly string[]>>;
     /** Preview members changed by this manifest or gate candidate. */
     readonly changed: readonly string[];
-    /** Optional organization policy checks. */
+    /**
+     * Optional in-process organization policy checks.
+     *
+     * A worker-boundary loading mechanism is deferred until the first policy
+     * check exists.
+     */
     readonly policyValidators?: readonly WorldValidator<StableKind>[];
 }
 /** Persistable result for one materialized or borrowed component. */
@@ -548,9 +553,19 @@ export declare function formatEnvironment<StableKind extends string>(env: Enviro
 export declare function parseEnvironmentName<StableKind extends string>(stableKinds: readonly StableKind[], name: string): Environment<StableKind>;
 /** Validates a programmatic environment against a discovered platform. */
 export declare function assertSupportedEnvironment(stableKinds: readonly string[], env: Environment<string>): void;
-/** Encodes a UUID as one canonical lowercase TypeID. */
+/**
+ * Encodes a UUID as a Henosis environment id in canonical TypeID format.
+ *
+ * Henosis environments always carry a non-empty prefix, so the general
+ * TypeID empty-prefix form is deliberately rejected by this helper.
+ */
 export declare function typeIdFromUuid(prefix: string, uuid: string): string;
-/** Decodes a canonical TypeID and returns its lowercase UUID. */
+/**
+ * Decodes a canonical Henosis environment id and returns its lowercase UUID.
+ *
+ * The general TypeID empty-prefix form is intentionally unsupported because
+ * Henosis environment identities always have a non-empty type prefix.
+ */
 export declare function uuidFromTypeId(typeId: string, expectedPrefix?: string): string;
 /**
  * Tests the temporary legacy `preview-...` compatibility grammar.

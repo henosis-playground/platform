@@ -234,6 +234,144 @@ describe("transactional lifecycle", () => {
       "Record transaction is aborted",
     );
   });
+
+  it("preserves the primary failure when dispose also throws", () => {
+    const platform = definePlatform({
+      identity: {
+        packageName: "@henosis/lifecycle",
+        packageVersion: "1.0.0",
+        apiVersion: 2,
+      },
+      stableEnvKinds,
+      createContext: ({ env, image }) => ({ env, image }),
+      dispose: () => {
+        throw new Error("dispose exploded");
+      },
+    });
+    const component = platform.defineComponent({
+      outputs: h.object({ value: h.string() }),
+      build: () => {
+        throw new Error("build exploded");
+      },
+    });
+
+    let caught: unknown;
+    try {
+      evaluateWorld(plan({ sample: component }));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PipelineError);
+    expect((caught as PipelineError).failure).toEqual({
+      stage: "build",
+      component: "sample",
+      message: "build exploded; dispose also failed: dispose exploded",
+    });
+  });
+
+  it("snapshots record payloads and outputs before sealed disposal", () => {
+    const payload = { nested: { value: "before" }, values: ["before"] };
+    const outputs = { nested: { value: "before" } };
+    const platform = definePlatform({
+      identity: {
+        packageName: "@henosis/lifecycle",
+        packageVersion: "1.0.0",
+        apiVersion: 2,
+      },
+      stableEnvKinds,
+      createContext: ({ env, image, records }) => ({ env, image, records }),
+      dispose: (_ctx, outcome) => {
+        if (outcome.status === "sealed") {
+          payload.nested.value = "after-seal";
+          payload.values[0] = "after-seal";
+          outputs.nested.value = "after-seal";
+        }
+      },
+    });
+    const component = platform.defineComponent({
+      outputs: h.object({ nested: h.object({ value: h.string() }) }),
+      build: (ctx) => {
+        ctx.records.write({ kind: "payload", data: payload });
+        return outputs;
+      },
+    });
+
+    const result = evaluateWorld(
+      plan({
+        sample: component as unknown as ComponentModule<ObjectSchema<SchemaShape>>,
+      }),
+    ).components.sample;
+    expect(result?.outputs).toEqual({ nested: { value: "before" } });
+    expect(result?.records).toEqual([
+      {
+        kind: "payload",
+        data: { nested: { value: "before" }, values: ["before"] },
+      },
+    ]);
+    expect(Object.isFrozen(result?.outputs)).toBe(true);
+    expect(Object.isFrozen(result?.records)).toBe(true);
+    expect(Object.isFrozen(result?.records[0]?.data)).toBe(true);
+    expect(Object.isFrozen(
+      (result?.records[0]?.data as { values: readonly string[] }).values,
+    )).toBe(true);
+  });
+
+  it("freezes resolved state before validators and projection", () => {
+    let projected = "";
+    const platform = definePlatform({
+      identity: {
+        packageName: "@henosis/lifecycle",
+        packageVersion: "1.0.0",
+        apiVersion: 2,
+      },
+      stableEnvKinds,
+      createContext: ({ env, image, records }) => ({ env, image, records }),
+      validators: [
+        {
+          id: "mutation.probe",
+          validate: (world) => {
+            const component = world.components.sample;
+            const outputs = component?.outputs as {
+              nested: { value: string };
+            };
+            const record = component?.records[0]?.data as {
+              nested: { value: string };
+            };
+            expect(Reflect.set(outputs.nested, "value", "validator-mutated")).toBe(
+              false,
+            );
+            expect(Reflect.set(record.nested, "value", "validator-mutated")).toBe(
+              false,
+            );
+            return [];
+          },
+        },
+      ],
+      project: ({ records }) => {
+        projected = JSON.stringify(records);
+        return [{ path: "records.json", contents: projected }];
+      },
+    });
+    const component = platform.defineComponent({
+      outputs: h.object({ nested: h.object({ value: h.string() }) }),
+      build: (ctx) => {
+        ctx.records.write({
+          kind: "payload",
+          data: { nested: { value: "before" } },
+        });
+        return { nested: { value: "before" } };
+      },
+    });
+
+    const result = evaluateWorld(
+      plan({
+        sample: component as unknown as ComponentModule<ObjectSchema<SchemaShape>>,
+      }),
+    ).components.sample;
+    expect(result?.outputs).toEqual({ nested: { value: "before" } });
+    expect(projected).toContain('"value":"before"');
+    expect(projected).not.toContain("validator-mutated");
+  });
 });
 
 describe("borrowing and core-owned resolution", () => {
@@ -329,6 +467,59 @@ describe("borrowing and core-owned resolution", () => {
   });
 });
 
+describe("world validator canonicalization", () => {
+  it("sorts by help and deduplicates a canonical field tuple", () => {
+    const platform = definePlatform({
+      identity: {
+        packageName: "@henosis/validator-platform",
+        packageVersion: "1.0.0",
+        apiVersion: 2,
+      },
+      stableEnvKinds,
+      createContext: ({ env, image }) => ({ env, image }),
+      validators: [
+        {
+          id: "canonical.probe",
+          validate: () => [
+            {
+              code: "canonical.issue",
+              message: "same message",
+              component: "sample",
+              help: "z-last",
+            },
+            {
+              component: "sample",
+              help: "z-last",
+              message: "same message",
+              code: "canonical.issue",
+            },
+            {
+              code: "canonical.issue",
+              message: "same message",
+              component: "sample",
+              help: "a-first",
+            },
+          ],
+        },
+      ],
+    });
+    const component = platform.defineComponent({
+      outputs: h.object({ value: h.string() }),
+      build: () => ({ value: "ok" }),
+    });
+
+    let caught: unknown;
+    try {
+      evaluateWorld(plan({ sample: component }));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(PipelineError);
+    expect((caught as PipelineError).failure.issues?.map((issue) => issue.help))
+      .toEqual(["a-first", "z-last"]);
+  });
+});
+
 describe("platform discovery and environment grammar", () => {
   function platform(packageVersion: string, packageName = "@henosis/discovery") {
     return definePlatform({
@@ -377,7 +568,9 @@ describe("platform discovery and environment grammar", () => {
         imported("a", make(first), "/p/one"),
         imported("b", make(mixed), "/p/two"),
       ]),
-    ).toThrow(/mixed platforms.*1\.0\.0.*2\.0\.0/);
+    ).toThrow(
+      /mixed platforms: component a carries @henosis\/discovery@1\.0\.0.*component b carries @henosis\/discovery@2\.0\.0/,
+    );
   });
 
   it("strictly parses TypeIDs, retains only the marked legacy shim, and roundtrips the representative", () => {
@@ -399,5 +592,39 @@ describe("platform discovery and environment grammar", () => {
     expect(() =>
       parseEnvironmentName(stableEnvKinds, representativePreviewName.toUpperCase()),
     ).toThrow("Unknown environment");
+  });
+
+  it("matches official TypeID vectors in the supported prefixed subset", () => {
+    const vectors = [
+      {
+        typeId: "prefix_0123456789abcdefghjkmnpqrs",
+        prefix: "prefix",
+        uuid: "0110c853-1d09-52d8-d73e-1194e95b5f19",
+      },
+      {
+        typeId: "prefix_01h455vb4pex5vsknk084sn02q",
+        prefix: "prefix",
+        uuid: "01890a5d-ac96-774b-bcce-b302099a8057",
+      },
+      {
+        typeId: "pre_fix_00000000000000000000000000",
+        prefix: "pre_fix",
+        uuid: "00000000-0000-0000-0000-000000000000",
+      },
+    ] as const;
+    for (const vector of vectors) {
+      expect(typeIdFromUuid(vector.prefix, vector.uuid)).toBe(vector.typeId);
+      expect(uuidFromTypeId(vector.typeId, vector.prefix)).toBe(vector.uuid);
+    }
+
+    expect(() => typeIdFromUuid("pre1", vectors[0].uuid)).toThrow(
+      "Invalid TypeID prefix",
+    );
+    expect(() => typeIdFromUuid("", vectors[0].uuid)).toThrow(
+      "Invalid TypeID prefix",
+    );
+    expect(() =>
+      uuidFromTypeId("prefix_8zzzzzzzzzzzzzzzzzzzzzzzzz", "prefix"),
+    ).toThrow("Invalid canonical TypeID");
   });
 });
