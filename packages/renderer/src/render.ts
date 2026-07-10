@@ -1,14 +1,20 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   envName,
-  type ComponentArtifact,
+  type ComponentDisposition,
   type JsonValue,
   type ResolvedComponentRecord,
-  type RuntimeEnv,
 } from "@henosis/core";
 import {
   assembleWorkspace,
@@ -18,34 +24,53 @@ import {
 } from "./assembler.js";
 import { enrichGateFailures } from "./contract-diagnostics.js";
 import {
-  executeComponents,
   ExecutionPipelineError,
+  executeComponents,
   type ExecutionComponent,
   type ExecutionResult,
-  type PipelineFailure,
 } from "./execute.js";
-import type { GateFailure, GateReport } from "./gate-report.js";
+import { pipelineFailures, renderFailure, type GateReport } from "./gate-report.js";
 import { isPinned, parseManifest, type EnvironmentManifest } from "./manifest.js";
 
-export type RenderManifest = {
-  environment: string;
-  generatedAt: string;
-  components: Record<string, RenderManifestComponent>;
-};
+/** Deterministic metadata written beside component artifact directories. */
+export interface RenderManifest {
+  /** Canonical requested environment. */
+  readonly environment: string;
+  /** Stable manifests whose pin changes require this manifest to re-render. */
+  readonly subscriptions: readonly string[];
+  /** Component metadata keyed by manifest identity. */
+  readonly components: Readonly<Record<string, RenderManifestComponent>>;
+}
 
-export type RenderManifestComponent = {
-  ref: string;
-  digest: string;
-  outputs: JsonValue;
-  records: readonly ResolvedComponentRecord[];
-  artifacts: readonly ComponentArtifact[];
-};
+/** Deterministic metadata for one rendered component. */
+export interface RenderManifestComponent {
+  /** Source ref selected by the manifest or its follower target. */
+  readonly ref: string;
+  /** Immutable image digest. */
+  readonly digest: string;
+  /** Direct or follower pin provenance. */
+  readonly source: ExecutionComponent["source"];
+  /** Effective context/params environment. */
+  readonly effectiveEnvironment: string;
+  /** Explicit materialized or borrowed disposition. */
+  readonly disposition: ComponentDisposition<string>;
+  /** Fully resolved outputs. */
+  readonly outputs: JsonValue;
+  /** Canonical deploy records; empty when borrowed. */
+  readonly records: readonly ResolvedComponentRecord[];
+  /** Component-relative artifact paths written separately. */
+  readonly artifactPaths: readonly string[];
+}
 
-export type RenderOutput = {
-  manifestPath: string;
-  componentFiles: Record<string, string>;
-  manifest: RenderManifest;
-};
+/** Paths and metadata returned after an atomic render publish. */
+export interface RenderOutput {
+  /** Final deterministic metadata path. */
+  readonly manifestPath: string;
+  /** Final artifact paths grouped by component. */
+  readonly artifactFiles: Readonly<Record<string, readonly string[]>>;
+  /** In-memory deterministic metadata. */
+  readonly manifest: RenderManifest;
+}
 
 const STRUCTURED_RENDER_FAILURE_PREFIX = "HENOSIS_GATE_REPORT:";
 
@@ -55,14 +80,22 @@ class RenderGateReportError extends Error {
   }
 }
 
+/** Installs, typechecks, executes, and atomically writes one manifest world. */
 export async function renderManifest(opts: {
-  manifest: EnvironmentManifest;
-  devManifest: EnvironmentManifest;
-  scratchDir: string;
-  outputDir: string;
-  platformRef: string;
-  platformRoot: string;
-  localOverrides?: LocalOverrides;
+  /** Requested environment manifest. */
+  readonly manifest: EnvironmentManifest;
+  /** Current dev manifest for live follower resolution. */
+  readonly devManifest: EnvironmentManifest;
+  /** Disposable install workspace. */
+  readonly scratchDir: string;
+  /** Final rendered world directory. */
+  readonly outputDir: string;
+  /** Platform source ref used by package overrides. */
+  readonly platformRef: string;
+  /** Local platform repository root. */
+  readonly platformRoot: string;
+  /** Optional local package overrides. */
+  readonly localOverrides?: LocalOverrides;
 }): Promise<RenderOutput> {
   const assembly = await assembleWorkspace({
     manifest: opts.manifest,
@@ -71,9 +104,12 @@ export async function renderManifest(opts: {
     platformRef: opts.platformRef,
     localOverrides: opts.localOverrides,
   });
-
   if (!assembly.ok) {
     throw new Error(assembly.compileOutput ?? "Workspace assembly failed");
+  }
+  const typeCheck = await checkWorkspaceTypes({ scratchDir: opts.scratchDir });
+  if (!typeCheck.ok) {
+    throw new Error(typeCheck.compileOutput ?? "Workspace typecheck failed");
   }
 
   let execution: ExecutionResult;
@@ -88,16 +124,7 @@ export async function renderManifest(opts: {
   } catch (error) {
     throw await renderGateReportError(error, opts);
   }
-
-  const typeCheck = await checkWorkspaceTypes({ scratchDir: opts.scratchDir });
-  if (!typeCheck.ok) {
-    throw new Error(typeCheck.compileOutput ?? "Workspace typecheck failed");
-  }
-
-  return writeRenderOutput({
-    execution,
-    outputDir: opts.outputDir,
-  });
+  return writeRenderOutput({ execution, outputDir: opts.outputDir });
 }
 
 async function renderGateReportError(
@@ -114,11 +141,11 @@ async function renderGateReportError(
     manifest: opts.manifest,
     devManifest: opts.devManifest,
   });
-  const failure =
+  const rawFailures =
     error instanceof ExecutionPipelineError
-      ? gateFailureFromPipeline(error.failure)
-      : gateFailure("renderer", "unknown", "render", errorMessage(error), errorMessage(error));
-  const failures = await enrichGateFailures([failure], {
+      ? pipelineFailures(error.failure, opts.manifest.environment)
+      : [renderFailure(errorMessage(error))];
+  const failures = await enrichGateFailures(rawFailures, {
     scratchDir: opts.scratchDir,
     components,
     platformRef: opts.platformRef,
@@ -127,133 +154,126 @@ async function renderGateReportError(
   return new RenderGateReportError({ ok: false, failures });
 }
 
-function gateFailureFromPipeline(failure: PipelineFailure): GateFailure {
-  return gateFailure(
-    failure.component,
-    failure.consumerOf ?? "unknown",
-    failure.kind,
-    failure.message,
-    failure.excerpt,
-    failure.consumedPaths ?? [],
-  );
-}
-
-function gateFailure(
-  consumer: string,
-  producer: string,
-  kind: GateFailure["kind"],
-  message: string,
-  excerpt: string,
-  consumedPaths: string[] = [],
-): GateFailure {
-  return {
-    consumer,
-    producer,
-    pinnedSha: null,
-    resolvedSha: null,
-    outputsSchemaAtPinned: null,
-    outputsSchemaAtResolved: null,
-    consumedPaths,
-    kind,
-    message,
-    excerpt,
-  };
-}
-
+/** Atomically writes projected component files and deterministic metadata. */
 export async function writeRenderOutput(opts: {
-  execution: ExecutionResult;
-  outputDir: string;
-  generatedAt?: string;
+  /** Completed core execution result. */
+  readonly execution: ExecutionResult;
+  /** Final environment output directory. */
+  readonly outputDir: string;
 }): Promise<RenderOutput> {
-  await mkdir(opts.outputDir, { recursive: true });
-  const generatedAt = opts.generatedAt ?? new Date().toISOString();
-  const components = Object.entries(opts.execution.components);
-  const environmentName = envName(opts.execution.env);
-
+  const outputDir = path.resolve(opts.outputDir);
+  const parent = path.dirname(outputDir);
+  await mkdir(parent, { recursive: true });
+  const staging = await mkdtemp(
+    path.join(parent, `.${path.basename(outputDir)}-staging-`),
+  );
+  const components = Object.entries(opts.execution.components).sort(
+    ([left], [right]) => compareCodeUnits(left, right),
+  );
   const manifest: RenderManifest = {
-    environment: environmentName,
-    generatedAt,
+    environment: envName(opts.execution.env),
+    subscriptions: opts.execution.subscriptions,
     components: Object.fromEntries(
       components.map(([name, component]) => [
         name,
-        {
-          ref: component.ref,
-          digest: component.digest,
-          outputs: component.outputs,
-          records: component.records,
-          artifacts: component.artifacts,
-        },
+        formatComponentRenderData(component),
       ]),
     ),
   };
+  const relativeArtifactFiles: Record<string, string[]> = {};
 
-  const componentFiles: Record<string, string> = {};
-  for (const [name, component] of components) {
-    const filePath = path.join(opts.outputDir, `${environmentName}-${name}.json`);
+  try {
+    for (const [name, component] of components) {
+      assertComponentName(name);
+      const componentRoot = path.join(staging, "components", name);
+      relativeArtifactFiles[name] = [];
+      for (const artifact of component.artifacts) {
+        const filePath = path.resolve(componentRoot, artifact.path);
+        const relative = path.relative(componentRoot, filePath);
+        if (
+          relative.startsWith("..") ||
+          path.isAbsolute(relative) ||
+          relative.length === 0
+        ) {
+          throw new Error(`Artifact path escapes component directory: ${artifact.path}`);
+        }
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, artifact.contents, { flag: "wx" });
+        relativeArtifactFiles[name]?.push(
+          path.join("components", name, artifact.path),
+        );
+      }
+    }
     await writeFile(
-      filePath,
-      `${JSON.stringify(formatComponentRenderData(opts.execution.env, name, component), null, 2)}\n`,
+      path.join(staging, "manifest.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { flag: "wx" },
     );
-    componentFiles[name] = filePath;
+    await rm(outputDir, { recursive: true, force: true });
+    await rename(staging, outputDir);
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
   }
 
-  const manifestPath = path.join(opts.outputDir, `${environmentName}-manifest.json`);
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-
-  return { manifestPath, componentFiles, manifest };
-}
-
-export function formatComponentRenderData(
-  env: RuntimeEnv,
-  componentName: string,
-  component: ExecutionComponent,
-): RenderManifestComponent & { component: string; environment: string } {
+  const artifactFiles = Object.fromEntries(
+    Object.entries(relativeArtifactFiles).map(([name, files]) => [
+      name,
+      files.map((file) => path.join(outputDir, file)),
+    ]),
+  );
   return {
-    component: componentName,
-    environment: envName(env),
-    ref: component.ref,
-    digest: component.digest,
-    outputs: component.outputs,
-    records: component.records,
-    artifacts: component.artifacts,
+    manifestPath: path.join(outputDir, "manifest.json"),
+    artifactFiles,
+    manifest,
   };
 }
 
+/** Formats one execution component for deterministic render metadata. */
+export function formatComponentRenderData(
+  component: ExecutionComponent,
+): RenderManifestComponent {
+  return {
+    ref: component.ref,
+    digest: component.digest,
+    source: component.source,
+    effectiveEnvironment: envName(component.effectiveEnv),
+    disposition: component.disposition,
+    outputs: component.outputs,
+    records: component.records,
+    artifactPaths: component.artifacts.map((artifact) => artifact.path),
+  };
+}
+
+/** Flattens resolved outputs for concise CLI summaries. */
 export function formatOutputs(outputs: JsonValue): string[] {
   return flattenOutputs(outputs).map(([key, value]) => `${key}=${String(value)}`);
 }
 
+/** Returns the local platform repository root. */
 export function defaultPlatformRoot(): string {
   return path.resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 }
 
+/** Resolves the current local Git HEAD without invoking version-control commands. */
 export function currentPlatformRef(platformRoot: string): string {
   const gitDir = path.join(platformRoot, ".git");
   const head = readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
-  if (!head.startsWith("ref: ")) {
-    return head;
-  }
-
+  if (!head.startsWith("ref: ")) return head;
   const refName = head.slice("ref: ".length);
   const looseRefPath = path.join(gitDir, refName);
   if (existsSync(looseRefPath)) {
     return readFileSync(looseRefPath, "utf8").trim();
   }
-
   const packedRefsPath = path.join(gitDir, "packed-refs");
   const packedRefs = existsSync(packedRefsPath)
     ? readFileSync(packedRefsPath, "utf8").split(/\r?\n/)
     : [];
   for (const line of packedRefs) {
-    if (line.startsWith("#") || line.length === 0) {
-      continue;
-    }
+    if (line.startsWith("#") || line.length === 0) continue;
     const [sha, packedRefName] = line.split(" ");
-    if (packedRefName === refName && sha !== undefined) {
-      return sha;
-    }
+    if (packedRefName === refName && sha !== undefined) return sha;
   }
-
   throw new Error(`Cannot resolve git HEAD ref ${refName}`);
 }
 
@@ -269,13 +289,14 @@ function flattenOutputs(
   ) {
     return [[prefix, value]];
   }
-
   if (Array.isArray(value)) {
     return value.flatMap((item, index) =>
-      flattenOutputs(item, prefix.length === 0 ? String(index) : `${prefix}.${index}`),
+      flattenOutputs(
+        item,
+        prefix.length === 0 ? String(index) : `${prefix}.${index}`,
+      ),
     );
   }
-
   return Object.entries(value).flatMap(([key, child]) =>
     flattenOutputs(child, prefix.length === 0 ? key : `${prefix}.${key}`),
   );
@@ -285,11 +306,12 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const manifestPath = args[0];
   if (manifestPath === undefined || args.includes("--help")) {
-    console.error("Usage: henosis-render <manifest.toml> [--output-dir <dir>]");
+    console.error(
+      "Usage: henosis-render <manifest.toml> [--output-dir <dir>] [--local-override name=/path]",
+    );
     process.exitCode = 1;
     return;
   }
-
   const outputDir = optionValue(args, "--output-dir") ?? "rendered-output";
   const manifest = parseManifest(await readFile(manifestPath, "utf8"));
   const devManifestPath = path.join(path.dirname(manifestPath), "dev.toml");
@@ -297,7 +319,6 @@ async function main(): Promise<void> {
   const scratchDir = await mkdtemp(path.join(os.tmpdir(), "henosis-render-"));
   const platformRoot = defaultPlatformRoot();
   const platformRef = currentPlatformRef(platformRoot);
-
   const output = await renderManifest({
     manifest,
     devManifest,
@@ -305,9 +326,9 @@ async function main(): Promise<void> {
     outputDir,
     platformRef,
     platformRoot,
+    localOverrides: parseLocalOverrides(args),
   });
-
-  const renderedNames = Object.keys(output.componentFiles).join(", ");
+  const renderedNames = Object.keys(output.artifactFiles).join(", ");
   const renderedPins = Object.entries(manifest.components)
     .flatMap(([name, entry]) =>
       isPinned(entry) ? [`${name}@${entry.ref.slice(0, 7)}`] : [],
@@ -316,22 +337,49 @@ async function main(): Promise<void> {
   console.log(
     `Rendered ${envName(manifest.environment)} (${renderedNames}) to ${outputDir}`,
   );
-  if (renderedPins.length > 0) {
-    console.log(`Rendered pins: ${renderedPins}`);
+  if (renderedPins.length > 0) console.log(`Rendered pins: ${renderedPins}`);
+}
+
+function assertComponentName(value: string): void {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) {
+    throw new Error(`Unsafe component name ${JSON.stringify(value)}`);
   }
 }
 
 function optionValue(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name);
-  if (index === -1) {
-    return undefined;
+  return index === -1 ? undefined : args[index + 1];
+}
+
+function parseLocalOverrides(args: readonly string[]): LocalOverrides {
+  const overrides: LocalOverrides = {};
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--local-override") continue;
+    const value = args[index + 1];
+    if (value === undefined) throw new Error("--local-override requires name=/path");
+    const separator = value.indexOf("=");
+    if (separator <= 0 || separator === value.length - 1) {
+      throw new Error("--local-override requires name=/path");
+    }
+    overrides[value.slice(0, separator)] = value.slice(separator + 1);
   }
-  return args[index + 1];
+  return overrides;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    if (error instanceof RenderGateReportError && process.env.GITHUB_ACTIONS === "true") {
+    if (
+      error instanceof RenderGateReportError &&
+      process.env.GITHUB_ACTIONS === "true"
+    ) {
       console.error(
         `##[error]${STRUCTURED_RENDER_FAILURE_PREFIX}${JSON.stringify(error.report)}`,
       );
@@ -340,8 +388,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
     process.exitCode = 1;
   });
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

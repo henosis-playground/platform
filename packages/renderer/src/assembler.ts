@@ -2,35 +2,40 @@ import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { RuntimeEnv } from "@henosis/core";
 import {
   isPinned,
   type EnvironmentManifest,
   type PinnedEntry,
 } from "./manifest.js";
 
+/** Local package paths replacing remote refs during verification and tests. */
 export type LocalOverrides = Record<string, string>;
 
+/** Result of one workspace installation or typecheck phase. */
 export type AssemblyResult = {
   ok: boolean;
   compileOutput?: string;
 };
 
-export type ComponentDisposition = "pinned" | "follow";
+/** Source-version disposition retained after follower resolution. */
+export type ManifestComponentDisposition = "pinned" | "follower";
 
+/** One manifest component after its concrete source/image pin is resolved. */
 export type ResolvedComponent = {
   name: string;
   packageName: string;
   repo: string;
   ref: string;
   digest: string;
-  disposition: ComponentDisposition;
-  env: RuntimeEnv;
-  follows?: RuntimeEnv;
+  entry:
+    | { readonly kind: "pinned" }
+    | { readonly kind: "follower"; readonly follow: string };
 };
 
+/** Consumer-to-component-dependencies graph discovered from package metadata. */
 export type ComponentDependencyGraph = Record<string, string[]>;
 
+/** Creates and installs a disposable candidate workspace. */
 export async function assembleWorkspace(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
@@ -80,6 +85,7 @@ export async function assembleWorkspace(opts: {
   }
 }
 
+/** Runs the candidate workspace TypeScript check without emitting files. */
 export async function checkWorkspaceTypes(opts: {
   scratchDir: string;
 }): Promise<AssemblyResult> {
@@ -100,6 +106,7 @@ export async function checkWorkspaceTypes(opts: {
   }
 }
 
+/** Convenience composition of workspace installation and typecheck. */
 export async function assembleAndCheck(opts: {
   manifest: EnvironmentManifest;
   devManifest: EnvironmentManifest;
@@ -192,36 +199,41 @@ class CommandError extends Error {
   }
 }
 
+/** Resolves direct and stable-follower entries to concrete unchanged pins. */
 export function resolveManifestComponents(opts: {
   manifest: EnvironmentManifest;
-  devManifest: EnvironmentManifest;
+  devManifest?: EnvironmentManifest;
+  stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
 }): ResolvedComponent[] {
+  const stableManifests: Readonly<Record<string, EnvironmentManifest>> = {
+    ...(opts.devManifest === undefined ? {} : { dev: opts.devManifest }),
+    ...(opts.stableManifests ?? {}),
+  };
   return Object.entries(opts.manifest.components).map(([name, entry]) => {
     if (isPinned(entry)) {
-      return resolvedComponentFromPinned(
-        name,
-        entry,
-        "pinned",
-        opts.manifest.environment,
-      );
+      return resolvedComponentFromPinned(name, entry, { kind: "pinned" });
     }
 
-    const devEntry = opts.devManifest.components[name];
-    if (devEntry === undefined || !isPinned(devEntry)) {
+    const followedManifest = stableManifests[entry.follow];
+    const followedEntry = followedManifest?.components[name];
+    if (followedEntry === undefined || !isPinned(followedEntry)) {
       throw new Error(
-        `Cannot resolve follower component "${name}": dev manifest must contain a pinned entry`,
+        `Cannot resolve follower component "${name}": ${entry.follow} manifest must contain a pinned entry`,
+      );
+    }
+    if (
+      followedManifest.environment.kind !== entry.follow ||
+      "id" in followedManifest.environment
+    ) {
+      throw new Error(
+        `Cannot resolve follower component "${name}": expected a ${entry.follow} manifest`,
       );
     }
 
-    return {
-      ...resolvedComponentFromPinned(
-        name,
-        devEntry,
-        "follow",
-        opts.manifest.environment,
-      ),
-      follows: { kind: "dev" },
-    };
+    return resolvedComponentFromPinned(name, followedEntry, {
+      kind: "follower",
+      follow: entry.follow,
+    });
   });
 }
 
@@ -263,6 +275,7 @@ export function previewChangedClosure(
   return closure;
 }
 
+/** Reads component dependency edges from installed package manifests. */
 export async function readComponentDependencyGraph(
   scratchDir: string,
   componentNames: readonly string[],
@@ -293,6 +306,7 @@ export async function readComponentDependencyGraph(
   return graph;
 }
 
+/** Returns dependency-first order or throws a cycle diagnostic. */
 export function topologicalOrder(
   graph: ComponentDependencyGraph,
   componentNames: readonly string[],
@@ -329,8 +343,7 @@ export function topologicalOrder(
 function resolvedComponentFromPinned(
   name: string,
   entry: PinnedEntry,
-  disposition: ComponentDisposition,
-  env: RuntimeEnv,
+  manifestEntry: ResolvedComponent["entry"],
 ): ResolvedComponent {
   return {
     name,
@@ -338,8 +351,7 @@ function resolvedComponentFromPinned(
     repo: entry.repo,
     ref: entry.ref,
     digest: entry.digest,
-    disposition,
-    env,
+    entry: manifestEntry,
   };
 }
 
@@ -369,6 +381,11 @@ async function writeScratchWorkspace(opts: {
       opts.localOverrides,
       "platform-mock",
       `github:henosis-playground/platform#${opts.platformRef}&path:packages/platform-mock`,
+    ),
+    "@henosis/platform-k8s": packageOverride(
+      opts.localOverrides,
+      "platform-k8s",
+      `github:henosis-playground/platform#${opts.platformRef}&path:packages/platform-k8s`,
     ),
   };
 

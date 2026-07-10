@@ -1,5 +1,6 @@
 import type { Schema } from "@henosis/core";
 
+/** Stable JSON representation of an introspectable output schema. */
 export type SchemaData =
   | {
       readonly kind: "object";
@@ -9,6 +10,7 @@ export type SchemaData =
       readonly kind: string;
     };
 
+/** Converts a runtime schema to code-unit-sorted diagnostic data. */
 export function schemaDataFromSchema(schema: Schema<unknown>): SchemaData {
   const raw: unknown = schema;
   if (!isRecord(raw) || typeof raw.kind !== "string") {
@@ -29,12 +31,13 @@ export function schemaDataFromSchema(schema: Schema<unknown>): SchemaData {
     kind: "object",
     shape: Object.fromEntries(
       Object.entries(shape)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([key, child]) => [key, schemaDataFromSchema(child as Schema<unknown>)]),
     ),
   };
 }
 
+/** Serializes arbitrary diagnostic JSON with recursively stable key order. */
 export function stableJson(value: unknown): string {
   return JSON.stringify(sortJson(value), null, 2);
 }
@@ -50,11 +53,15 @@ function sortJson(value: unknown): unknown {
 
   return Object.fromEntries(
     Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, child]) => [key, sortJson(child)]),
   );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

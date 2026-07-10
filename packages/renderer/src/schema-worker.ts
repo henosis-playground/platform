@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
-  bindComponentIdentity,
   getComponentDefinition,
   isComponentModule,
 } from "@henosis/core";
@@ -24,7 +23,6 @@ if (!isRecord(imported) || !isComponentModule(imported.default)) {
   throw new Error(`Package @henosis/${input.component} did not default-export a component`);
 }
 
-bindComponentIdentity(imported.default, input.component);
 const schema = schemaDataFromSchema(getComponentDefinition(imported.default).outputs);
 const serialized = `${JSON.stringify(schema)}\n`;
 if (input.outputPath === undefined) {

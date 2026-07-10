@@ -1,4 +1,4 @@
-import { h, type BuildContext as CoreBuildContext, type Environment as CoreEnvironment } from "@henosis/core";
+import { h, type BuildContext as CoreBuildContext, type Environment as CoreEnvironment, type ParamsTable } from "@henosis/core";
 /** The stable environment kinds supported by the mock platform. */
 export declare const stableEnvKinds: readonly ["dev", "staging", "prod"];
 /** A stable environment kind supported by the mock platform. */
@@ -7,6 +7,8 @@ export type StableEnvKind = (typeof stableEnvKinds)[number];
 export type Env = CoreEnvironment<StableEnvKind>;
 /** The zero-capability context supplied by the mock platform. */
 export type BuildContext = CoreBuildContext<Env>;
+/** Optional homogeneous annotation for the mock platform's params table. */
+export type Params<Row extends object> = ParamsTable<StableEnvKind, Row>;
 /** Defines a mock-platform component with fully typed ctx and params. */
 export declare const defineComponent: import("./v1-compat.js").PlatformMockDefineComponent;
 /** Formats a mock-platform environment name. */

@@ -8,6 +8,7 @@ import type { ResolvedComponent } from "./assembler.js";
 import type { GateFailure } from "./gate-report.js";
 import type { SchemaData } from "./schema-data.js";
 
+/** Inputs used to enrich one bot failure with D20 version/schema evidence. */
 export type EnrichmentOptions = {
   scratchDir: string;
   components: readonly ResolvedComponent[];
@@ -17,6 +18,7 @@ export type EnrichmentOptions = {
 
 type SchemaCache = Map<string, Promise<SchemaData | null>>;
 
+/** Enriches every failure without changing the strict report field shape. */
 export async function enrichGateFailures(
   failures: readonly GateFailure[],
   opts: EnrichmentOptions,
@@ -93,6 +95,7 @@ export async function enrichGateFailures(
   );
 }
 
+/** Extracts stable output-schema data from one installed component default. */
 export async function extractInstalledOutputSchema(
   scratchDir: string,
   component: string,
@@ -101,6 +104,7 @@ export async function extractInstalledOutputSchema(
   return extractOutputSchemaFromPackage(packageDir, component, scratchDir);
 }
 
+/** Extracts stable output-schema data from an explicit component package path. */
 export async function extractOutputSchemaFromPackage(
   packageDir: string,
   component: string,
@@ -133,6 +137,7 @@ export async function extractOutputSchemaFromPackage(
   return isSchemaData(parsed) ? parsed : null;
 }
 
+/** Finds the producer commit pinned by one consumer pnpm lockfile. */
 export function producerShaFromPnpmLock(
   lockfile: string,
   producer: string,
@@ -148,6 +153,7 @@ export function producerShaFromPnpmLock(
   return shaFromPackageEntries(parsed, packageName);
 }
 
+/** Classifies one consumed output path across pinned and resolved schemas. */
 export function consumedSchemaChange(
   pinned: SchemaData | null,
   resolved: SchemaData | null,
@@ -187,6 +193,11 @@ async function extractGitOutputSchema(opts: {
       opts.localOverrides,
       "platform-mock",
       `github:henosis-playground/platform#${opts.platformRef}&path:packages/platform-mock`,
+    ),
+    "@henosis/platform-k8s": packageOverride(
+      opts.localOverrides,
+      "platform-k8s",
+      `github:henosis-playground/platform#${opts.platformRef}&path:packages/platform-k8s`,
     ),
     [`@henosis/${opts.component}`]: `github:${opts.repo}#${opts.ref}&path:henosis`,
   };

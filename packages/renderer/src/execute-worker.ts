@@ -1,619 +1,282 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
-  bindComponentIdentity,
-  evaluateComponent,
-  getComponentDefinition,
+  PipelineError,
+  envName,
+  evaluateWorld,
+  inspectWorldPlatform,
   isComponentModule,
-  isRef,
-  refOutputPath,
-  refSourceComponent,
-  runWorldValidators,
-  validateSchema,
-  type BuildValue,
-  type ComponentArtifact,
-  type ComponentModule,
-  type ComponentRecord,
-  type JsonValue,
-  type ObjectSchema,
-  type Ref,
-  type ResolvedComponentRecord,
+  parseEnvironmentName,
+  type ComponentPlatformInfo,
+  type ImportedComponent,
+  type PipelineFailure,
+  type RenderResult,
   type RuntimeEnv,
-  type SchemaShape,
-  type ValidationIssue,
+  type WorldPlanComponent,
 } from "@henosis/core";
 
 type WorkerComponentInfo = {
-  disposition: "pinned" | "follow";
-  env: RuntimeEnv;
   ref: string;
   digest: string;
-  fallThroughEligible: boolean;
 };
 
 type WorkerInput = {
+  mode: "inspect" | "execute";
   components: Record<string, WorkerComponentInfo>;
-  env: RuntimeEnv;
-  order: string[];
+  dependencies: Readonly<Record<string, readonly string[]>>;
+  requestedEnv: RuntimeEnv;
+  changed: readonly string[];
   scratchDir: string;
   outputPath?: string;
-};
-
-type WorkerSuccessComponent = {
-  disposition: "pinned" | "follow";
-  env: RuntimeEnv;
-  ref: string;
-  digest: string;
-  fellThrough: boolean;
-  outputs: JsonValue;
-  records: readonly ResolvedComponentRecord[];
-  artifacts: readonly ComponentArtifact[];
-};
-
-type WorkerFailure = {
-  component: string;
-  consumerOf?: string;
-  consumedPaths?: string[];
-  kind: "render" | "validate" | "resolve";
-  message: string;
-  excerpt: string;
 };
 
 type WorkerOutput =
   | {
       ok: true;
-      components: Record<string, WorkerSuccessComponent>;
+      platform: ComponentPlatformInfo;
+      result?: RenderResult<string>;
     }
-  | WorkerFailureOutput;
-
-type WorkerFailureOutput = {
-  ok: false;
-  failure: WorkerFailure;
-};
-
-type ResolutionResult = { ok: true; value: JsonValue } | WorkerFailureOutput;
-type RecordResolutionResult =
-  | { ok: true; value: readonly ResolvedComponentRecord[] }
-  | WorkerFailureOutput;
-
-type EvaluatedComponent = {
-  module: ComponentModule<ObjectSchema<SchemaShape>>;
-  outputs: BuildValue<unknown>;
-  records: readonly ComponentRecord[];
-  artifacts: readonly ComponentArtifact[];
-  env: RuntimeEnv;
-  fellThrough: boolean;
-};
+  | {
+      ok: false;
+      failure: PipelineFailure;
+      platform?: ComponentPlatformInfo;
+    };
 
 const inputPath = process.argv[2];
-if (inputPath === undefined) {
-  throw new Error("Missing worker input path");
-}
-
+if (inputPath === undefined) throw new Error("Missing worker input path");
 const input = parseInput(readFileSync(inputPath, "utf8"));
-const modules = new Map<string, ComponentModule<ObjectSchema<SchemaShape>>>();
-const evaluated = new Map<string, EvaluatedComponent>();
-const resolved = new Map<string, JsonValue>();
-
 const output = await run();
-const serializedOutput = `${JSON.stringify(output)}\n`;
+const serialized = `${JSON.stringify(output)}\n`;
 if (input.outputPath === undefined) {
-  console.log(serializedOutput.trimEnd());
+  process.stdout.write(serialized);
 } else {
-  writeFileSync(input.outputPath, serializedOutput);
+  writeFileSync(input.outputPath, serialized);
 }
 
 async function run(): Promise<WorkerOutput> {
-  for (const name of input.order) {
-    const imported = await importComponent(input.scratchDir, name);
-    bindComponentIdentity(imported, name);
-    modules.set(name, imported);
-  }
-
-  for (const name of input.order) {
-    const info = input.components[name];
-    const module = modules.get(name);
-    if (info === undefined || module === undefined) {
-      return failure({
-        component: name,
-        kind: "render",
-        message: `Missing component info for ${name}`,
-      });
-    }
-
-    const result = evaluateOne(name, module, info);
-    if (!result.ok) {
-      return result;
-    }
-  }
-
-  const components: Record<string, WorkerSuccessComponent> = {};
-  for (const name of input.order) {
-    const resolution = resolveComponent(name, []);
-    if (!resolution.ok) {
-      return resolution;
-    }
-
-    const evaluatedComponent = evaluated.get(name);
-    const info = input.components[name];
-    const module = modules.get(name);
-    if (
-      evaluatedComponent === undefined ||
-      info === undefined ||
-      module === undefined
-    ) {
-      return failure({
-        component: name,
-        kind: "render",
-        message: `Worker lost evaluated component ${name}`,
-      });
-    }
-
-    const validationIssues = validateSchema(
-      getComponentDefinition(module).outputs,
-      resolution.value,
+  let imported: readonly ImportedComponent[];
+  try {
+    imported = await Promise.all(
+      Object.keys(input.components)
+        .sort(compareCodeUnits)
+        .map((name) => importComponent(input.scratchDir, name)),
     );
-    if (validationIssues.length > 0) {
-      return validationFailure(name, validationIssues[0]);
-    }
+  } catch (error) {
+    return failure("platform-discovery", error);
+  }
 
-    const recordResolution = resolveRecords(name, evaluatedComponent.records);
-    if (!recordResolution.ok) {
-      return recordResolution;
-    }
+  let platform: ComponentPlatformInfo;
+  try {
+    platform = inspectWorldPlatform(imported);
+  } catch (error) {
+    return error instanceof PipelineError
+      ? { ok: false, failure: error.failure }
+      : failure("platform-discovery", error);
+  }
+  if (input.mode === "inspect") return { ok: true, platform };
 
-    components[name] = {
-      disposition: info.disposition,
-      env: evaluatedComponent.env,
-      ref: info.ref,
-      digest: info.digest,
-      fellThrough: evaluatedComponent.fellThrough,
-      outputs: resolution.value,
-      records: recordResolution.value,
-      artifacts: evaluatedComponent.artifacts,
+  try {
+    const requestedEnv = parseEnvironmentName(
+      platform.stableEnvKinds,
+      envName(input.requestedEnv),
+    );
+    const importedByName = new Map(
+      imported.map((component) => [component.name, component]),
+    );
+    const components: WorldPlanComponent[] = Object.entries(input.components)
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([name, info]) => ({
+        ...required(importedByName.get(name)),
+        image: { ref: info.ref, digest: info.digest },
+      }));
+    return {
+      ok: true,
+      platform,
+      result: evaluateWorld({
+        requestedEnv,
+        components,
+        dependencies: input.dependencies,
+        changed: input.changed,
+      }),
     };
-  }
-
-  try {
-    runWorldValidators([...modules.values()], {
-      env: input.env,
-      components: Object.fromEntries(
-        Object.entries(components).map(([name, component]) => [
-          name,
-          component.records,
-        ]),
-      ),
-    });
   } catch (error) {
-    return failure({
-      component: "world",
-      kind: "validate",
-      message: `World validation failed: ${errorMessage(error)}`,
-      excerpt: errorStack(error),
-    });
-  }
-
-  return { ok: true, components };
-}
-
-function resolveRecords(
-  component: string,
-  records: readonly ComponentRecord[],
-): RecordResolutionResult {
-  const resolvedRecords: ResolvedComponentRecord[] = [];
-  for (const record of records) {
-    const resolution = resolveValue(
-      record.data as BuildValue<unknown>,
-      component,
-      [],
-    );
-    if (!resolution.ok) {
-      return resolution;
-    }
-    resolvedRecords.push({ kind: record.kind, data: resolution.value });
-  }
-  return { ok: true, value: resolvedRecords };
-}
-
-function evaluateOne(
-  name: string,
-  module: ComponentModule<ObjectSchema<SchemaShape>>,
-  info: WorkerComponentInfo,
-): { ok: true } | WorkerFailureOutput {
-  const definition = getComponentDefinition(module);
-  const fellThrough =
-    info.fallThroughEligible && definition.fallThrough === true;
-  const effectiveEnv: RuntimeEnv = fellThrough ? { kind: "dev" } : info.env;
-  const records: ComponentRecord[] = [];
-  const artifacts: ComponentArtifact[] = [];
-  let result;
-  try {
-    result = evaluateComponent(module, {
-      env: effectiveEnv,
-      image: { ref: info.ref, digest: info.digest },
-      records: { write: (record) => records.push(record) },
-      artifacts: { write: (artifact) => artifacts.push(artifact) },
-    });
-  } catch (error) {
-    return failure({
-      component: name,
-      kind: "render",
-      message: `Failed to evaluate ${name}: ${errorMessage(error)}`,
-      excerpt: errorStack(error),
-    });
-  }
-
-  const issues = validateSchema(getComponentDefinition(module).outputs, result.outputs, {
-    allowRefs: true,
-  });
-  if (issues.length > 0) {
-    return validationFailure(name, issues[0]);
-  }
-
-  evaluated.set(name, {
-    module,
-    outputs: result.outputs,
-    records,
-    artifacts: fellThrough ? [] : artifacts,
-    env: effectiveEnv,
-    fellThrough,
-  });
-
-  return { ok: true };
-}
-
-function resolveComponent(
-  name: string,
-  stack: readonly string[],
-): ResolutionResult {
-  const cached = resolved.get(name);
-  if (cached !== undefined) {
-    return { ok: true, value: cached };
-  }
-
-  if (stack.includes(name)) {
-    const cycle = [...stack, name].join(" -> ");
-    return failure({
-      component: name,
-      kind: "resolve",
-      message: `Component reference cycle detected: ${cycle}`,
-    });
-  }
-
-  const component = evaluated.get(name);
-  if (component === undefined) {
-    return failure({
-      component: name,
-      kind: "resolve",
-      message: `Cannot resolve ${name}: component was not evaluated`,
-    });
-  }
-
-  const value = resolveValue(component.outputs, name, [...stack, name]);
-  if (!value.ok) {
-    return value;
-  }
-
-  resolved.set(name, value.value);
-  return value;
-}
-
-function resolveValue(
-  value: BuildValue<unknown>,
-  consumer: string,
-  stack: readonly string[],
-): ResolutionResult {
-  if (isRef(value)) {
-    return resolveRef(value, consumer, stack);
-  }
-
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return { ok: true, value };
-  }
-
-  if (Array.isArray(value)) {
-    const resolvedItems: JsonValue[] = [];
-    for (const item of value) {
-      const resolvedItem = resolveValue(item as BuildValue<unknown>, consumer, stack);
-      if (!resolvedItem.ok) {
-        return resolvedItem;
-      }
-      resolvedItems.push(resolvedItem.value);
-    }
-    return { ok: true, value: resolvedItems };
-  }
-
-  if (!isRecord(value)) {
-    return failure({
-      component: consumer,
-      kind: "resolve",
-      message: `Cannot resolve non-serialisable output value for ${consumer}`,
-      excerpt: String(value),
-    });
-  }
-
-  const resolvedObject: Record<string, JsonValue> = {};
-  for (const [key, child] of Object.entries(value)) {
-    const resolvedChild = resolveValue(child as BuildValue<unknown>, consumer, stack);
-    if (!resolvedChild.ok) {
-      return resolvedChild;
-    }
-    resolvedObject[key] = resolvedChild.value;
-  }
-
-  return { ok: true, value: resolvedObject };
-}
-
-function resolveRef(
-  ref: Ref<unknown>,
-  consumer: string,
-  stack: readonly string[],
-): ResolutionResult {
-  const source = refSourceComponent(ref) ?? inferAbsentDependency(consumer);
-  const outputPath = refOutputPath(ref);
-  const outputName = outputPath.join(".");
-
-  if (source === undefined) {
-    return failure({
-      component: consumer,
-      kind: "resolve",
-      message: `${consumer} contains a ref to ${outputName} from an unknown component`,
-    });
-  }
-
-  if (!(source in input.components)) {
-    const message = `${consumer} consumes ${source}.${outputName} which no longer exists`;
-    return failure({
-      component: consumer,
-      consumerOf: source,
-      consumedPaths: [outputName],
-      kind: "resolve",
-      message,
-    });
-  }
-
-  const sourceResolved = resolveComponent(source, stack);
-  if (!sourceResolved.ok) {
-    return sourceResolved;
-  }
-
-  const output = getPath(sourceResolved.value, outputPath);
-  if (output === undefined) {
-    const message = `${consumer} consumes ${source}.${outputName} which no longer exists`;
-    return failure({
-      component: consumer,
-      consumerOf: source,
-      consumedPaths: [outputName],
-      kind: "resolve",
-      message,
-    });
-  }
-
-  return { ok: true, value: output };
-}
-
-function inferAbsentDependency(consumer: string): string | undefined {
-  const packageJsonPath = path.join(
-    input.scratchDir,
-    "node_modules",
-    "@henosis",
-    consumer,
-    "package.json",
-  );
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-  } catch {
-    return undefined;
-  }
-
-  const dependencies = isRecord(parsed) && isRecord(parsed.dependencies)
-    ? parsed.dependencies
-    : {};
-  const candidates = Object.keys(dependencies)
-    .filter((dependency) => dependency.startsWith("@henosis/"))
-    .filter((dependency) => isComponentPackage(dependency))
-    .map((dependency) => dependency.slice("@henosis/".length))
-    .filter((dependency) => !(dependency in input.components));
-
-  return candidates.length === 1 ? candidates[0] : undefined;
-}
-
-function isComponentPackage(packageName: string): boolean {
-  const packageJsonPath = path.join(
-    input.scratchDir,
-    "node_modules",
-    ...packageName.split("/"),
-    "package.json",
-  );
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-    return (
-      isRecord(parsed) &&
-      isRecord(parsed.henosis) &&
-      typeof parsed.henosis.component === "string"
-    );
-  } catch {
-    return false;
+    return error instanceof PipelineError
+      ? { ok: false, failure: error.failure, platform }
+      : failure("build", error, platform);
   }
 }
 
 async function importComponent(
   scratchDir: string,
   name: string,
-): Promise<ComponentModule<ObjectSchema<SchemaShape>>> {
-  const modulePath = path.join(
+): Promise<ImportedComponent> {
+  const packageRoot = path.join(
     scratchDir,
     "node_modules",
     "@henosis",
     name,
-    "src",
-    "index.ts",
   );
+  const modulePath = path.join(packageRoot, "src", "index.ts");
   const imported: unknown = await import(pathToFileURL(modulePath).href);
   if (!isRecord(imported) || !isComponentModule(imported.default)) {
     throw new Error(`Package @henosis/${name} did not default-export a component`);
   }
-  return imported.default;
-}
-
-function validationFailure(
-  component: string,
-  issue: ValidationIssue | undefined,
-): WorkerFailureOutput {
-  if (issue === undefined) {
-    return failure({
-      component,
-      kind: "validate",
-      message: `${component} output validation failed`,
-    });
-  }
-
-  const outputPath = issue.path.join(".");
-  const message = `${component}.${outputPath} expected ${issue.expected}, got ${issue.actual}`;
-  const sourceRef = refAtPath(evaluated.get(component)?.outputs, issue.path);
-  const source = sourceRef === undefined ? undefined : refSourceComponent(sourceRef);
-  const consumedPath =
-    sourceRef === undefined ? undefined : refOutputPath(sourceRef).join(".");
-  return failure({
-    component,
-    consumerOf: source ?? component,
-    consumedPaths:
-      consumedPath === undefined
-        ? outputPath.length > 0
-          ? [outputPath]
-          : undefined
-        : [consumedPath],
-    kind: "validate",
-    message,
-  });
-}
-
-function failure(opts: {
-  component: string;
-  consumerOf?: string;
-  consumedPaths?: string[];
-  kind: "render" | "validate" | "resolve";
-  message: string;
-  excerpt?: string;
-}): WorkerFailureOutput {
   return {
-    ok: false,
-    failure: {
-      component: opts.component,
-      consumerOf: opts.consumerOf,
-      consumedPaths: opts.consumedPaths,
-      kind: opts.kind,
-      message: opts.message,
-      excerpt: opts.excerpt ?? opts.message,
+    name,
+    component: imported.default,
+    origin: {
+      componentPackage: `@henosis/${name}`,
+      componentPath: realpathIfPossible(modulePath),
+      platformPath: findPlatformPath(packageRoot, modulePath),
     },
   };
 }
 
-function refAtPath(
-  value: BuildValue<unknown> | undefined,
-  pathParts: readonly string[],
-): Ref<unknown> | undefined {
-  let current: BuildValue<unknown> | undefined = value;
-  for (const part of pathParts) {
-    if (!isRecord(current) || !(part in current)) {
-      return undefined;
+function findPlatformPath(packageRoot: string, modulePath: string): string {
+  const packageJson = parseJsonObject(
+    readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+  );
+  const dependencyGroups = [
+    packageJson.dependencies,
+    packageJson.peerDependencies,
+  ].filter(isRecord);
+  const dependencyNames = new Set(
+    dependencyGroups.flatMap((group) => Object.keys(group)),
+  );
+  const require = createRequire(pathToFileURL(modulePath));
+  for (const dependency of [...dependencyNames].sort(compareCodeUnits)) {
+    let entryPath: string;
+    try {
+      entryPath = require.resolve(dependency);
+    } catch {
+      continue;
     }
-    current = current[part] as BuildValue<unknown>;
+    const dependencyRoot = findPackageRoot(entryPath);
+    if (dependencyRoot === undefined) continue;
+    try {
+      const dependencyJson = parseJsonObject(
+        readFileSync(path.join(dependencyRoot, "package.json"), "utf8"),
+      );
+      if (
+        isRecord(dependencyJson.henosis) &&
+        dependencyJson.henosis.platform === true
+      ) {
+        return realpathIfPossible(dependencyRoot);
+      }
+    } catch {
+      // Continue looking through the component's declared dependencies.
+    }
   }
-  return isRef(current) ? current : undefined;
+  return `<platform imported by ${packageRoot}>`;
 }
 
-function getPath(value: JsonValue, pathParts: readonly string[]): JsonValue | undefined {
-  let current: JsonValue | undefined = value;
-  for (const part of pathParts) {
-    if (!isRecord(current) || !(part in current)) {
-      return undefined;
-    }
-    current = current[part];
+function findPackageRoot(entryPath: string): string | undefined {
+  let directory = path.dirname(entryPath);
+  while (directory !== path.dirname(directory)) {
+    if (existsSync(path.join(directory, "package.json"))) return directory;
+    directory = path.dirname(directory);
   }
-  return current;
+  return undefined;
 }
 
 function parseInput(source: string): WorkerInput {
   const parsed: unknown = JSON.parse(source);
-  if (!isRecord(parsed) || !isRecord(parsed.components) || !Array.isArray(parsed.order)) {
+  if (
+    !isRecord(parsed) ||
+    (parsed.mode !== "inspect" && parsed.mode !== "execute") ||
+    !isRecord(parsed.components) ||
+    !isRecord(parsed.dependencies) ||
+    !Array.isArray(parsed.changed) ||
+    typeof parsed.scratchDir !== "string" ||
+    !isRuntimeEnv(parsed.requestedEnv)
+  ) {
     throw new Error("Invalid worker input");
   }
-
-  if (typeof parsed.scratchDir !== "string") {
-    throw new Error("Invalid worker input: scratchDir must be a string");
-  }
-
   const components: Record<string, WorkerComponentInfo> = {};
   for (const [name, value] of Object.entries(parsed.components)) {
     if (
       !isRecord(value) ||
-      (value.disposition !== "pinned" && value.disposition !== "follow") ||
-      !isRuntimeEnv(value.env) ||
       typeof value.ref !== "string" ||
-      typeof value.digest !== "string" ||
-      typeof value.fallThroughEligible !== "boolean"
+      typeof value.digest !== "string"
     ) {
-      throw new Error(`Invalid worker input for component ${name}`);
+      throw new Error(`Invalid worker component ${name}`);
     }
-
-    components[name] = {
-      disposition: value.disposition,
-      env: value.env,
-      ref: value.ref,
-      digest: value.digest,
-      fallThroughEligible: value.fallThroughEligible,
-    };
+    components[name] = { ref: value.ref, digest: value.digest };
   }
-
+  const dependencies: Record<string, readonly string[]> = {};
+  for (const [name, value] of Object.entries(parsed.dependencies)) {
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+      throw new Error(`Invalid worker dependency row ${name}`);
+    }
+    dependencies[name] = value;
+  }
+  if (!parsed.changed.every((entry) => typeof entry === "string")) {
+    throw new Error("Invalid worker changed set");
+  }
   return {
+    mode: parsed.mode,
+    components,
+    dependencies,
+    changed: parsed.changed as string[],
     scratchDir: parsed.scratchDir,
-    env: parseRuntimeEnv(parsed.env, "env"),
+    requestedEnv: parsed.requestedEnv,
     outputPath:
       typeof parsed.outputPath === "string" ? parsed.outputPath : undefined,
-    components,
-    order: parsed.order.map((value) => {
-      if (typeof value !== "string") {
-        throw new Error("Invalid worker input: order entries must be strings");
-      }
-      return value;
-    }),
   };
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function errorStack(error: unknown): string {
-  return error instanceof Error && error.stack !== undefined
-    ? error.stack
-    : errorMessage(error);
+function failure(
+  stage: PipelineFailure["stage"],
+  error: unknown,
+  platform?: ComponentPlatformInfo,
+): WorkerOutput {
+  return {
+    ok: false,
+    failure: { stage, message: errorMessage(error) },
+    ...(platform === undefined ? {} : { platform }),
+  };
 }
 
 function isRuntimeEnv(value: unknown): value is RuntimeEnv {
-  if (!isRecord(value)) {
-    return false;
-  }
   return (
+    isRecord(value) &&
     typeof value.kind === "string" &&
     (value.kind !== "preview" || typeof value.id === "string")
   );
 }
 
-function parseRuntimeEnv(value: unknown, field: string): RuntimeEnv {
-  if (!isRuntimeEnv(value)) {
-    throw new Error(`Invalid worker input: ${field} must be an environment`);
-  }
+function parseJsonObject(source: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(source);
+  if (!isRecord(value)) throw new Error("Expected a JSON object");
   return value;
+}
+
+function realpathIfPossible(value: string): string {
+  try {
+    return realpathSync(value);
+  } catch {
+    return value;
+  }
+}
+
+function required<Value>(value: Value | undefined): Value {
+  if (value === undefined) throw new Error("Required value was absent");
+  return value;
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

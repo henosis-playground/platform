@@ -11,208 +11,228 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ComponentArtifact,
+  ComponentDisposition,
+  ComponentPlatformInfo,
+  Environment,
   JsonValue,
+  PipelineFailure,
+  RenderResult,
   ResolvedComponentRecord,
   RuntimeEnv,
 } from "@henosis/core";
 import {
-  previewChangedClosure,
   readComponentDependencyGraph,
   resolveManifestComponents,
-  topologicalOrder,
   type LocalOverrides,
   type ResolvedComponent,
 } from "./assembler.js";
-import type { EnvironmentManifest } from "./manifest.js";
+import { isPinned, type EnvironmentManifest } from "./manifest.js";
 
-export type FailureKind = "compile" | "render" | "validate" | "resolve";
-
-export type PipelineFailure = {
-  component: string;
-  consumerOf?: string;
-  consumedPaths?: string[];
-  kind: FailureKind;
-  message: string;
-  excerpt: string;
-};
-
+/** Error thrown when a worker returns a structured core pipeline failure. */
 export class ExecutionPipelineError extends Error {
+  /** Creates an execution error preserving the complete structured failure. */
   constructor(readonly failure: PipelineFailure) {
     super(failure.message);
+    this.name = "ExecutionPipelineError";
   }
 }
 
-type ExecutionComponentData = {
-  ref: string;
-  digest: string;
-  env: RuntimeEnv;
-  fellThrough: boolean;
-  outputs: JsonValue;
-  records: readonly ResolvedComponentRecord[];
-  artifacts: readonly ComponentArtifact[];
-};
+/** One component returned across the renderer worker boundary. */
+export interface ExecutionComponent {
+  /** Source pin ref. */
+  readonly ref: string;
+  /** Immutable image digest. */
+  readonly digest: string;
+  /** Whether the source pin was direct or followed a stable manifest. */
+  readonly source:
+    | { readonly kind: "pinned" }
+    | { readonly kind: "follower"; readonly follow: string };
+  /** Effective environment selected by core. */
+  readonly effectiveEnv: Environment<string>;
+  /** Explicit materialized or borrowed disposition. */
+  readonly disposition: ComponentDisposition<string>;
+  /** Fully resolved outputs. */
+  readonly outputs: JsonValue;
+  /** Canonical deployment records; empty when borrowed. */
+  readonly records: readonly ResolvedComponentRecord[];
+  /** Projected files; empty when borrowed. */
+  readonly artifacts: readonly ComponentArtifact[];
+  /** Actual ref dependencies observed by core resolution. */
+  readonly dependencies: readonly string[];
+}
 
-export type PinnedExecutionComponent = ExecutionComponentData & {
-  disposition: "pinned";
-};
-
-export type FollowExecutionComponent = ExecutionComponentData & {
-  disposition: "follow";
-  follows: RuntimeEnv;
-};
-
-export type ExecutionComponent =
-  | PinnedExecutionComponent
-  | FollowExecutionComponent;
-
-export type ExecutionResult = {
-  env: RuntimeEnv;
-  components: Record<string, ExecutionComponent>;
-};
-
-type WorkerComponentInfo = {
-  disposition: "pinned" | "follow";
-  env: RuntimeEnv;
-  ref: string;
-  digest: string;
-  fallThroughEligible: boolean;
-};
+/** Complete execution result for one requested environment. */
+export interface ExecutionResult {
+  /** Requested environment. */
+  readonly env: Environment<string>;
+  /** Platform facts discovered from component defaults. */
+  readonly platform: ComponentPlatformInfo;
+  /** Stable environments whose pins can require this manifest to re-render. */
+  readonly subscriptions: readonly string[];
+  /** Component results keyed by manifest name. */
+  readonly components: Readonly<Record<string, ExecutionComponent>>;
+}
 
 type WorkerInput = {
-  components: Record<string, WorkerComponentInfo>;
-  env: RuntimeEnv;
-  order: string[];
+  mode: "inspect" | "execute";
+  components: Record<string, { ref: string; digest: string }>;
+  dependencies: Readonly<Record<string, readonly string[]>>;
+  requestedEnv: RuntimeEnv;
+  changed: readonly string[];
   scratchDir: string;
   outputPath: string;
-};
-
-type WorkerSuccessComponent = {
-  disposition: "pinned" | "follow";
-  env: RuntimeEnv;
-  ref: string;
-  digest: string;
-  fellThrough: boolean;
-  outputs: JsonValue;
-  records: readonly ResolvedComponentRecord[];
-  artifacts: readonly ComponentArtifact[];
 };
 
 type WorkerOutput =
   | {
       ok: true;
-      components: Record<string, WorkerSuccessComponent>;
+      platform: ComponentPlatformInfo;
+      result?: RenderResult<string>;
     }
   | {
       ok: false;
       failure: PipelineFailure;
+      platform?: ComponentPlatformInfo;
     };
 
+/** Discovers platform identity and stable kinds from installed defaults only. */
+export async function inspectInstalledComponents(opts: {
+  /** Fully resolved candidate components. */
+  readonly components: readonly ResolvedComponent[];
+  /** Installed scratch workspace. */
+  readonly scratchDir: string;
+}): Promise<ComponentPlatformInfo> {
+  const output = await runWorker({
+    mode: "inspect",
+    components: workerComponents(opts.components),
+    dependencies: {},
+    requestedEnv: { kind: "dev" },
+    changed: [],
+    scratchDir: opts.scratchDir,
+  });
+  if (!output.ok) throw new ExecutionPipelineError(output.failure);
+  return output.platform;
+}
+
+/** Runs the core-owned pipeline in a fresh worker for one environment. */
 export async function executeComponents(opts: {
-  manifest: EnvironmentManifest;
-  devManifest: EnvironmentManifest;
-  scratchDir: string;
-  platformRoot: string;
-  localOverrides?: LocalOverrides;
+  /** Requested manifest whose pins are rendered. */
+  readonly manifest: EnvironmentManifest;
+  /** Dev manifest retained for live follower compatibility. */
+  readonly devManifest: EnvironmentManifest;
+  /** Installed scratch workspace. */
+  readonly scratchDir: string;
+  /** Repository root retained for CLI compatibility. */
+  readonly platformRoot: string;
+  /** Local overrides retained for CLI compatibility. */
+  readonly localOverrides?: LocalOverrides;
+  /** Gate cell environment override. */
+  readonly requestedEnv?: RuntimeEnv;
+  /** Gate candidate changed set override. */
+  readonly changedComponents?: readonly string[];
 }): Promise<ExecutionResult> {
   void opts.platformRoot;
   void opts.localOverrides;
-
   const resolved = resolveManifestComponents({
     manifest: opts.manifest,
     devManifest: opts.devManifest,
   });
   const componentNames = resolved.map((component) => component.name);
-  const graph = await readComponentDependencyGraph(opts.scratchDir, componentNames);
-  const order = topologicalOrder(graph, componentNames);
-  const changedClosure = previewChangedClosure(opts.manifest, graph);
-  const inputPath = path.join(opts.scratchDir, ".henosis-execute-input.json");
-  const outputPath = path.join(opts.scratchDir, ".henosis-execute-output.json");
-
-  const workerInput: WorkerInput = {
+  const dependencies = await readComponentDependencyGraph(
+    opts.scratchDir,
+    componentNames,
+  );
+  const requestedEnv = opts.requestedEnv ?? opts.manifest.environment;
+  const changed =
+    opts.changedComponents ??
+    (opts.manifest.environment.kind === "preview"
+      ? Object.entries(opts.manifest.components)
+          .filter(([, entry]) => isPinned(entry))
+          .map(([name]) => name)
+      : componentNames);
+  const output = await runWorker({
+    mode: "execute",
+    components: workerComponents(resolved),
+    dependencies,
+    requestedEnv,
+    changed,
     scratchDir: opts.scratchDir,
-    outputPath,
-    env: opts.manifest.environment,
-    order,
-    components: workerComponents(
-      resolved,
-      opts.manifest.environment.kind === "preview",
-      changedClosure,
-    ),
-  };
-
-  await writeFile(inputPath, `${JSON.stringify(workerInput)}\n`);
-  const workerOutput = await runWorker(inputPath, outputPath);
-
-  if (!workerOutput.ok) {
-    throw new ExecutionPipelineError(workerOutput.failure);
+  });
+  if (!output.ok) throw new ExecutionPipelineError(output.failure);
+  if (output.result === undefined) {
+    throw new ExecutionPipelineError({
+      stage: "build",
+      message: "Execution worker omitted its render result",
+    });
   }
 
-  return {
-    env: opts.manifest.environment,
-    components: Object.fromEntries(
-      resolved.map((component) => {
-        const output = workerOutput.components[component.name];
-        if (output === undefined) {
-          throw new ExecutionPipelineError({
-            component: component.name,
-            kind: "render",
-            message: `Worker did not return outputs for ${component.name}`,
-            excerpt: `Worker did not return outputs for ${component.name}`,
-          });
-        }
-
-        const common: ExecutionComponentData = {
-          ref: component.ref,
-          digest: component.digest,
-          env: output.env,
-          fellThrough: output.fellThrough,
-          outputs: output.outputs,
-          records: output.records,
-          artifacts: output.artifacts,
-        };
-        if (component.disposition === "follow") {
-          return [
-            component.name,
-            {
-              ...common,
-              disposition: "follow",
-              follows: { kind: "dev" },
-            } satisfies FollowExecutionComponent,
-          ];
-        }
-
-        return [
-          component.name,
-          {
-            ...common,
-            disposition: "pinned",
-          } satisfies PinnedExecutionComponent,
-        ];
-      }),
-    ),
-  };
+  const components: Record<string, ExecutionComponent> = {};
+  for (const component of resolved) {
+    const result = output.result.components[component.name];
+    if (result === undefined) {
+      throw new ExecutionPipelineError({
+        stage: "build",
+        component: component.name,
+        message: `Execution worker omitted ${component.name}`,
+      });
+    }
+    components[component.name] = Object.freeze({
+      ref: component.ref,
+      digest: component.digest,
+      source: component.entry,
+      effectiveEnv: result.effectiveEnv,
+      disposition: result.disposition,
+      outputs: result.outputs,
+      records: result.records,
+      artifacts: result.artifacts,
+      dependencies: result.dependencies,
+    });
+  }
+  const subscriptions = new Set<string>();
+  for (const component of Object.values(components)) {
+    if (component.source.kind === "follower") {
+      subscriptions.add(component.source.follow);
+    }
+    if (component.disposition.kind === "borrowed") {
+      subscriptions.add(component.disposition.from);
+    }
+  }
+  return Object.freeze({
+    env: output.result.requestedEnv,
+    platform: output.platform,
+    subscriptions: Object.freeze([...subscriptions].sort(compareCodeUnits)),
+    components: Object.freeze(components),
+  });
 }
 
 function workerComponents(
-  resolved: readonly ResolvedComponent[],
-  preview: boolean,
-  changedClosure: ReadonlySet<string>,
-): Record<string, WorkerComponentInfo> {
+  components: readonly ResolvedComponent[],
+): Record<string, { ref: string; digest: string }> {
   return Object.fromEntries(
-    resolved.map((component) => [
+    components.map((component) => [
       component.name,
-      {
-        disposition: component.disposition,
-        env: component.env,
-        ref: component.ref,
-        digest: component.digest,
-        fallThroughEligible: preview && !changedClosure.has(component.name),
-      },
+      { ref: component.ref, digest: component.digest },
     ]),
   );
 }
 
-async function runWorker(inputPath: string, outputPath: string): Promise<WorkerOutput> {
+async function runWorker(
+  input: Omit<WorkerInput, "outputPath">,
+): Promise<WorkerOutput> {
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const inputPath = path.join(
+    input.scratchDir,
+    `.henosis-execute-${token}.input.json`,
+  );
+  const outputPath = path.join(
+    input.scratchDir,
+    `.henosis-execute-${token}.output.json`,
+  );
+  await writeFile(
+    inputPath,
+    `${JSON.stringify({ ...input, outputPath } satisfies WorkerInput)}\n`,
+  );
+
   const builtWorkerPath = fileURLToPath(
     new URL("./execute-worker.js", import.meta.url),
   );
@@ -222,21 +242,20 @@ async function runWorker(inputPath: string, outputPath: string): Promise<WorkerO
   const rendererPackageRoot = path.resolve(
     fileURLToPath(new URL("..", import.meta.url)),
   );
-
   try {
     await runCommand(process.execPath, ["--import", "tsx", workerPath, inputPath], {
       cwd: rendererPackageRoot,
     });
+    return parseWorkerOutput(readFileSync(outputPath, "utf8"));
   } catch (error) {
     throw new ExecutionPipelineError({
-      component: "renderer",
-      kind: "render",
+      stage: "build",
       message: errorMessage(error),
-      excerpt: execErrorOutput(error),
     });
+  } finally {
+    removeIfPresent(inputPath);
+    removeIfPresent(outputPath);
   }
-
-  return parseWorkerOutput(readFileSync(outputPath, "utf8"));
 }
 
 async function runCommand(
@@ -250,25 +269,22 @@ async function runCommand(
       cwd: opts.cwd,
       stdio: ["ignore", capture.stdoutFd, capture.stderrFd],
     });
-
     child.on("error", (error) => {
       const output = readCommandCapture(capture);
       reject(new CommandError(error.message, output.stdout, output.stderr));
     });
     child.on("close", (code) => {
       const output = readCommandCapture(capture);
-      if (code === 0) {
-        resolve();
-        return;
+      if (code === 0) resolve();
+      else {
+        reject(
+          new CommandError(
+            `${command} exited with status ${code ?? "unknown"}`,
+            output.stdout,
+            output.stderr,
+          ),
+        );
       }
-
-      reject(
-        new CommandError(
-          `${command} exited with status ${code ?? "unknown"}`,
-          output.stdout,
-          output.stderr,
-        ),
-      );
     });
   });
 }
@@ -315,56 +331,63 @@ class CommandError extends Error {
   }
 }
 
-function parseWorkerOutput(stdout: string): WorkerOutput {
-  const parsed: unknown = JSON.parse(stdout);
-  if (!isRecord(parsed) || typeof parsed.ok !== "boolean") {
-    throw new ExecutionPipelineError({
-      component: "renderer",
-      kind: "render",
-      message: "Worker returned malformed output",
-      excerpt: stdout,
-    });
+function parseWorkerOutput(source: string): WorkerOutput {
+  const value: unknown = JSON.parse(source);
+  if (!isRecord(value) || typeof value.ok !== "boolean") {
+    throw new Error("Worker returned malformed output");
   }
-
-  return parsed as WorkerOutput;
+  if (value.ok) {
+    if (!isPlatformInfo(value.platform)) {
+      throw new Error("Worker omitted platform discovery data");
+    }
+    return value as WorkerOutput;
+  }
+  if (!isPipelineFailure(value.failure)) {
+    throw new Error("Worker omitted its structured failure");
+  }
+  return value as WorkerOutput;
 }
 
-function execErrorOutput(error: unknown): string {
+function isPlatformInfo(value: unknown): value is ComponentPlatformInfo {
+  return (
+    isRecord(value) &&
+    isRecord(value.identity) &&
+    typeof value.identity.packageName === "string" &&
+    typeof value.identity.packageVersion === "string" &&
+    value.identity.apiVersion === 2 &&
+    Array.isArray(value.stableEnvKinds) &&
+    value.stableEnvKinds.every((kind) => typeof kind === "string")
+  );
+}
+
+function isPipelineFailure(value: unknown): value is PipelineFailure {
+  return (
+    isRecord(value) &&
+    typeof value.stage === "string" &&
+    typeof value.message === "string"
+  );
+}
+
+function removeIfPresent(filePath: string): void {
+  try {
+    unlinkSync(filePath);
+  } catch {
+    // Worker setup may fail before creating one of the files.
+  }
+}
+
+function errorMessage(error: unknown): string {
   if (error instanceof CommandError) {
     const output = [error.stdout, error.stderr]
       .filter((part) => part.length > 0)
       .join("\n");
     return output.length > 0 ? output : error.message;
   }
-
-  const stdout = stringErrorProperty(error, "stdout");
-  const stderr = stringErrorProperty(error, "stderr");
-  const output = [stdout, stderr].filter((part) => part.length > 0).join("\n");
-  if (output.length > 0) {
-    return output;
-  }
-  return errorMessage(error);
-}
-
-function stringErrorProperty(error: unknown, key: "stdout" | "stderr"): string {
-  if (!isRecord(error)) {
-    return "";
-  }
-
-  const value = error[key];
-  if (typeof value === "string") {
-    return value;
-  }
-
-  if (value instanceof Buffer) {
-    return value.toString("utf8");
-  }
-
-  return "";
-}
-
-function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

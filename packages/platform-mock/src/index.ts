@@ -3,6 +3,7 @@ import {
   h,
   type BuildContext as CoreBuildContext,
   type Environment as CoreEnvironment,
+  type ParamsTable,
 } from "@henosis/core";
 import { withV1BuildCompatibility } from "./v1-compat.js";
 import { PACKAGE_VERSION } from "./version.generated.js";
@@ -18,6 +19,9 @@ export type Env = CoreEnvironment<StableEnvKind>;
 
 /** The zero-capability context supplied by the mock platform. */
 export type BuildContext = CoreBuildContext<Env>;
+
+/** Optional homogeneous annotation for the mock platform's params table. */
+export type Params<Row extends object> = ParamsTable<StableEnvKind, Row>;
 
 const platform = definePlatform<typeof stableEnvKinds, BuildContext>({
   identity: {

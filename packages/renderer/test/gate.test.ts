@@ -9,114 +9,47 @@ const scratchDirs: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    scratchDirs.splice(0).map((scratchDir) =>
-      rm(scratchDir, { recursive: true, force: true }),
+    scratchDirs.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
     ),
   );
 });
 
-describe("runGate", () => {
-  it("typechecks the platform-mock v2 ctx and inferred params row", async () => {
-    const fixture = await makeGateFixture(`
-      import { defineComponent, h, type Env } from "@henosis/platform-mock";
+describe("widened merge gate", () => {
+  it("blocks on a prod-only invalid HPA row after dev passes", async () => {
+    const fixture = await makeGateFixture();
+    const result = await runGate(fixture.options);
 
-      export default defineComponent({
-        outputs: h.object({ api: h.url() }),
-        params: {
-          dev: { origin: "dev.example" },
-          staging: { origin: "staging.example" },
-          prod: { origin: "prod.example" },
-          preview: { origin: "preview.example" },
-        },
-        build: (ctx, params) => {
-          const env: Env = ctx.env;
-          const row: { origin: string } = params;
-          void env;
-          return { api: \`https://\${row.origin}\` };
-        },
-      });
-    `);
-
-    const { report } = await runGate(fixture.options);
-    expect(report).toEqual({ ok: true, failures: [] });
-  });
-
-  it("validates component builds before workspace tsc", async () => {
-    const fixture = await makeGateFixture(`
-      import { defineComponent, h } from "@henosis/platform-mock";
-
-      export default defineComponent({
-        outputs: h.object({
-          api: h.url(),
-          test: h.string(),
-        }),
-        build: () => ({
-          api: "https://service-a.henosis.example",
-        }),
-      });
-    `);
-
-    const { report, text } = await runGate(fixture.options);
-
-    expect(report).toEqual({
-      ok: false,
-      failures: [
-        {
-          consumer: "service-a",
-          producer: "service-a",
-          pinnedSha: null,
-          resolvedSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          outputsSchemaAtPinned: null,
-          outputsSchemaAtResolved: {
-            kind: "object",
-            shape: {
-              api: { kind: "url" },
-              test: { kind: "string" },
-            },
-          },
-          consumedPaths: ["test"],
-          kind: "validate",
-          message: "service-a.test expected string, got missing",
-          excerpt: "service-a.test expected string, got missing",
-        },
-      ],
-    });
-    expect(text).toContain("validate error:");
-    expect(text).not.toContain("TypeScript errors:");
-  });
-
-  it("reports own output type mismatches as validate failures", async () => {
-    const fixture = await makeGateFixture(`
-      import { defineComponent, h } from "@henosis/platform-mock";
-
-      export default defineComponent({
-        outputs: h.object({ port: h.string() }),
-        build: () => ({ port: 5432 }),
-      });
-    `);
-
-    const { report } = await runGate(fixture.options);
-
-    expect(report.failures[0]).toMatchObject({
+    expect(result.cells.map((cell) => [cell.environment, cell.ok])).toEqual([
+      ["dev", true],
+      ["prod", false],
+      ["preview_3jhc7x633z88188fzqhcbbrf84", true],
+    ]);
+    expect(result.report.ok).toBe(false);
+    expect(result.report.failures[0]).toMatchObject({
       consumer: "service-a",
-      producer: "service-a",
-      consumedPaths: ["port"],
-      kind: "validate",
-      message: "service-a.port expected string, got number",
-      outputsSchemaAtResolved: {
-        kind: "object",
-        shape: {
-          port: { kind: "string" },
-        },
-      },
+      kind: "render",
+      message: "[prod] replicas.min must not exceed replicas.max",
     });
+    expect(Object.keys(result.report).sort()).toEqual(["failures", "ok"]);
+    expect(result.text).toContain("prod: FAIL");
+  });
+
+  it("kill switch reduces execution to the unconditional dev cell", async () => {
+    const fixture = await makeGateFixture();
+    const result = await runGate({ ...fixture.options, widenedGate: false });
+
+    expect(result.report).toEqual({ ok: true, failures: [] });
+    expect(result.cells).toEqual([
+      { environment: "dev", ok: true, failures: [] },
+    ]);
   });
 });
 
-async function makeGateFixture(source: string): Promise<{
+async function makeGateFixture(): Promise<{
   options: Parameters<typeof runGate>[0];
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "henosis-gate-test-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "henosis-k8s-gate-"));
   scratchDirs.push(root);
   const scratchDir = path.join(root, "scratch");
   const outputDir = path.join(root, "output");
@@ -124,27 +57,43 @@ async function makeGateFixture(source: string): Promise<{
   const manifestPath = path.join(root, "candidate.toml");
   const devManifestPath = path.join(root, "dev.toml");
   await mkdir(path.join(componentDir, "src"), { recursive: true });
-
   await writeFile(
     path.join(componentDir, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "@henosis/service-a",
-        version: "0.0.0",
-        private: true,
-        type: "module",
-        exports: { ".": "./src/index.ts" },
-        henosis: { component: "service-a" },
-        dependencies: {
-          "@henosis/platform-mock": "*",
-        },
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({
+      name: "@henosis/service-a",
+      version: "0.0.0",
+      type: "module",
+      exports: { ".": "./src/index.ts" },
+      henosis: { component: "service-a" },
+      dependencies: { "@henosis/platform-k8s": "*" },
+    }, null, 2)}\n`,
   );
-  await writeFile(path.join(componentDir, "src", "index.ts"), source);
+  await writeFile(
+    path.join(componentDir, "src", "index.ts"),
+    `
+      import { defineComponent, h } from "@henosis/platform-k8s";
 
+      export default defineComponent({
+        outputs: h.object({ api: h.url() }),
+        params: {
+          dev: { replicas: { min: 1, max: 3, targetCpu: 70 } },
+          prod: { replicas: { min: 5, max: 2, targetCpu: 70 } },
+          preview: { replicas: { min: 1, max: 2, targetCpu: 70 } },
+        },
+        build: (ctx, params) => {
+          const service = ctx.namespace("payments").service("api", {
+            targetPort: 8080,
+            replicas: params.replicas,
+            resources: {
+              requests: { cpu: "100m", memory: "128Mi" },
+              limits: { cpu: "500m", memory: "512Mi" },
+            },
+          });
+          return { api: service.url };
+        },
+      });
+    `,
+  );
   const manifest = `
     [environment]
     id = "dev"
@@ -152,11 +101,10 @@ async function makeGateFixture(source: string): Promise<{
     [components.service-a]
     repo = "henosis-playground/service-a"
     ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    digest = "sha256:service-a"
+    digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   `;
   await writeFile(manifestPath, manifest);
   await writeFile(devManifestPath, manifest);
-
   const platformRoot = platformRepoRoot();
   return {
     options: {
@@ -166,7 +114,7 @@ async function makeGateFixture(source: string): Promise<{
       outputDir,
       localOverrides: {
         core: path.join(platformRoot, "packages", "core"),
-        "platform-mock": path.join(platformRoot, "packages", "platform-mock"),
+        "platform-k8s": path.join(platformRoot, "packages", "platform-k8s"),
         "service-a": componentDir,
         typescript: path.join(platformRoot, "node_modules", "typescript"),
       },

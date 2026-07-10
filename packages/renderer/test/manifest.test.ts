@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { representativePreviewName } from "@henosis/core";
 import { parseManifest } from "../src/manifest.js";
 
 describe("parseManifest", () => {
@@ -36,6 +37,32 @@ describe("parseManifest", () => {
         follow = "dev"
       `).components["service-b"],
     ).toEqual({ kind: "follower", follow: "dev" });
+  });
+
+  it("accepts canonical TypeIDs and generalized stable follower targets", () => {
+    expect(
+      parseManifest(`
+        [environment]
+        id = "${representativePreviewName}"
+
+        [components.service-b]
+        follow = "prod"
+      `),
+    ).toEqual({
+      environment: { kind: "preview", id: representativePreviewName },
+      components: {
+        "service-b": { kind: "follower", follow: "prod" },
+      },
+    });
+  });
+
+  it("rejects malformed preview identities instead of treating them as names", () => {
+    expect(() =>
+      parseManifest(`
+        [environment]
+        id = "preview_NOT-A-TYPEID"
+      `),
+    ).toThrow("Invalid canonical TypeID");
   });
 
   it("allows an empty components table", () => {

@@ -3,11 +3,12 @@ import { envName, type RuntimeEnv } from "@henosis/core";
 import type {
   ExecutionComponent,
   ExecutionResult,
-  PipelineFailure,
 } from "./execute.js";
+import type { PipelineFailure } from "@henosis/core";
 import { formatOutputs } from "./render.js";
 import type { SchemaData } from "./schema-data.js";
 
+/** Existing strict Rust-bot failure object; its JSON fields are unchanged. */
 export type GateFailure = {
   consumer: string;
   producer: string;
@@ -21,11 +22,13 @@ export type GateFailure = {
   excerpt: string;
 };
 
+/** Existing strict Rust-bot report object; do not add fields. */
 export type GateReport = {
   ok: boolean;
   failures: GateFailure[];
 };
 
+/** Extracts D20-compatible component failures from TypeScript diagnostics. */
 export function parseCompileFailures(
   compileOutput: string,
   graph: ComponentDependencyGraph,
@@ -72,17 +75,50 @@ export function parseCompileFailures(
   ];
 }
 
+/** Converts one core failure to the first bot-compatible failure. */
 export function pipelineFailure(failure: PipelineFailure): GateFailure {
-  return contractFailure({
-    consumer: failure.component,
-    producer: failure.consumerOf ?? "unknown",
-    kind: failure.kind,
-    message: failure.message,
-    excerpt: failure.excerpt,
-    consumedPaths: failure.consumedPaths ?? [],
-  });
+  return pipelineFailures(failure)[0] ?? renderFailure(failure.message);
 }
 
+/** Converts all structured issues in a core failure without dropping evidence. */
+export function pipelineFailures(
+  failure: PipelineFailure,
+  environment?: RuntimeEnv,
+): GateFailure[] {
+  const environmentName = environment === undefined ? undefined : envName(environment);
+  if (failure.issues !== undefined && failure.issues.length > 0) {
+    return failure.issues.map((issue) =>
+      contractFailure({
+        consumer: issue.component,
+        producer: "unknown",
+        kind: "validate",
+        message: prefixEnvironment(issue.message, environmentName),
+        excerpt: JSON.stringify(issue),
+        consumedPaths:
+          issue.record === undefined ? [] : [issue.record.path],
+      }),
+    );
+  }
+  const kind = failureKind(failure.stage);
+  const component = failure.component ?? "world";
+  const resolution = resolutionDetails(failure.message);
+  const outputPath = outputValidationPath(component, failure.message);
+  return [contractFailure({
+    consumer: component,
+    producer: resolution?.producer ?? (kind === "validate" ? component : "unknown"),
+    kind,
+    message: prefixEnvironment(failure.message, environmentName),
+    excerpt: prefixEnvironment(failure.message, environmentName),
+    consumedPaths:
+      resolution?.path === undefined
+        ? outputPath === undefined
+          ? []
+          : [outputPath]
+        : [resolution.path],
+  })];
+}
+
+/** Creates a renderer-scoped bot-compatible failure. */
 export function renderFailure(message: string, excerpt = message): GateFailure {
   return contractFailure({
     consumer: "renderer",
@@ -94,6 +130,7 @@ export function renderFailure(message: string, excerpt = message): GateFailure {
   });
 }
 
+/** Formats the retained single-environment human report helper. */
 export function formatGateText(opts: {
   ok: boolean;
   environment: RuntimeEnv;
@@ -170,26 +207,69 @@ function contractFailure(opts: {
 function formatComponentSummary(component: ResolvedComponent): string {
   const sha = component.ref.slice(0, 7);
   const disposition =
-    component.disposition === "pinned" ? "[PINNED]" : "[FOLLOW dev]";
+    component.entry.kind === "pinned"
+      ? "[PINNED]"
+      : `[FOLLOW ${component.entry.follow}]`;
   return `  ${component.name}  ${disposition} sha:${sha}`;
 }
 
 function formatExecutionSummary(execution: ExecutionResult): string[] {
   return Object.entries(execution.components).flatMap(([name, component]) => {
-    if (component.disposition === "follow") {
-      return [
-        `  ${name}: dev pin rendered${component.fellThrough ? " via dev fallThrough" : ""}`,
-        ...formatOutputs(component.outputs).map((line) => `    ${line}`),
-        "",
-      ];
-    }
-
     return [
-      `  ${name}: pinned ${component.digest}`,
+      `  ${name}: ${formatDisposition(component)} ${component.digest}`,
       ...formatComponentOutputs(component).map((line) => `    ${line}`),
       "",
     ];
   });
+}
+
+function formatDisposition(component: ExecutionComponent): string {
+  if (component.disposition.kind === "borrowed") {
+    return `borrowed from ${component.disposition.from}`;
+  }
+  return component.source.kind === "follower"
+    ? `materialized from ${component.source.follow} pin`
+    : "materialized pinned";
+}
+
+function failureKind(stage: PipelineFailure["stage"]): GateFailure["kind"] {
+  if (stage === "resolution") return "resolve";
+  if (
+    stage === "pending-output-validation" ||
+    stage === "resolved-output-validation" ||
+    stage === "validator" ||
+    stage === "world-validation"
+  ) {
+    return "validate";
+  }
+  return "render";
+}
+
+function prefixEnvironment(message: string, environment: string | undefined): string {
+  return environment === undefined ? message : `[${environment}] ${message}`;
+}
+
+function resolutionDetails(
+  message: string,
+): { producer: string; path: string } | undefined {
+  const match = / consumes missing ([a-z0-9-]+)\.([A-Za-z0-9_$.]+)/.exec(message);
+  return match?.[1] === undefined || match[2] === undefined
+    ? undefined
+    : { producer: match[1], path: match[2] };
+}
+
+function outputValidationPath(
+  component: string,
+  message: string,
+): string | undefined {
+  const match = new RegExp(`^${escapeRegExp(component)}\\.([^ ]+) expected `).exec(
+    message,
+  );
+  return match?.[1];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function formatComponentOutputs(component: ExecutionComponent): string[] {

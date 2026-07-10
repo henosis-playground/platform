@@ -13,16 +13,19 @@ export {
   previewChangedClosure,
   type AssemblyResult,
   type ComponentDependencyGraph,
-  type ComponentDisposition,
   type LocalOverrides,
+  type ManifestComponentDisposition,
   type ResolvedComponent,
 } from "./assembler.js";
 export {
   executeComponents,
+  inspectInstalledComponents,
   type ExecutionComponent,
   type ExecutionResult,
-  type FollowExecutionComponent,
-  type PinnedExecutionComponent,
-  type PipelineFailure,
 } from "./execute.js";
-export { renderManifest, type RenderOutput } from "./render.js";
+export {
+  renderManifest,
+  type RenderManifest,
+  type RenderManifestComponent,
+  type RenderOutput,
+} from "./render.js";
