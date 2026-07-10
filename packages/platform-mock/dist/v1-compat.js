@@ -9,7 +9,7 @@ export function withV1BuildCompatibility(defineV2) {
             const legacyBuild = spec.build;
             return invokeV2({
                 outputs: spec.outputs,
-                fallThrough: spec.fallThrough,
+                borrowForPreview: spec.borrowForPreview,
                 build: ((ctx) => legacyBuild(ctx, ctx.env)),
             });
         }

@@ -18,7 +18,7 @@
     "platform": true
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../scripts/generate-package-version.mjs . && tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.typecheck.json"
   },
   "dependencies": {

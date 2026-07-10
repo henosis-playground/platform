@@ -1,316 +1,583 @@
-/** The well-known property that stores a component's non-author-facing definition. */
+/** The well-known property containing a component's renderer-facing definition. */
 export declare const componentDefinitionSymbol: unique symbol;
 declare const componentRuntimeSymbol: unique symbol;
 declare const schemaSymbol: unique symbol;
 declare const refSymbol: unique symbol;
 declare const schemaTypeBrand: unique symbol;
 declare const refTypeBrand: unique symbol;
-/** A stable environment kind supplied by a platform. `preview` is reserved. */
-export type StableEnvKind = string;
-/**
- * A platform environment.
- *
- * Stable kinds are chosen by the platform. Preview is always the special kind
- * carrying the complete preview identity.
- */
-export type Env<Kind extends StableEnvKind = StableEnvKind> = {
-    readonly kind: Kind;
+declare const resolvedRecordBrand: unique symbol;
+/** The fixed representative preview used by the widened merge gate. */
+export declare const representativePreviewName: "preview_3jhc7x633z88188fzqhcbbrf84";
+/** A platform-defined stable environment or an id-carrying preview. */
+export type Environment<StableKind extends string> = {
+    readonly kind: StableKind;
 } | {
     readonly kind: "preview";
     readonly id: string;
 };
-/** The environment shape used at platform-independent runtime boundaries. */
+/** Backward-compatible short name for {@link Environment}. */
+export type Env<StableKind extends string = string> = Environment<StableKind>;
+/** The erased environment shape used at renderer and worker boundaries. */
 export type RuntimeEnv = {
-    /** The stable platform kind, or `preview`. */
     readonly kind: string;
-    /** The complete identity carried only by a preview environment. */
-    readonly id?: string;
+} | {
+    readonly kind: "preview";
+    readonly id: string;
 };
-/** The source ref and immutable image digest selected by a manifest pin. */
-export type ImageRef = {
-    /** The source revision or image tag from the manifest pin. */
+/** The unchanged source ref and immutable image digest from a manifest pin. */
+export interface ImageRef {
+    /** Source revision selected for the component package. */
     readonly ref: string;
-    /** The immutable image digest from the manifest pin. */
+    /** Immutable image digest selected for deployment. */
     readonly digest: string;
-};
-/** The context fields every platform supplies to component builds. */
-export type BuildContext<Environment extends RuntimeEnv = RuntimeEnv> = {
-    /** The environment this build is executing at. */
-    readonly env: Environment;
-    /** The image selected for this component. */
+}
+/** Fields supplied by every platform context. */
+export interface BuildContext<EnvType extends RuntimeEnv = RuntimeEnv> {
+    /** Environment at which this component build is evaluated. */
+    readonly env: EnvType;
+    /** Unchanged manifest image pin. */
     readonly image: ImageRef;
-};
-/** A JSON-compatible value. */
+}
+/** A JSON-compatible value after symbolic references are resolved. */
 export type JsonValue = string | number | boolean | null | readonly JsonValue[] | {
     readonly [key: string]: JsonValue;
 };
-/** A pre-resolution structured record value, including symbolic output refs. */
-export type ComponentRecordValue = string | number | boolean | null | Ref<unknown> | readonly ComponentRecordValue[] | {
-    readonly [key: string]: ComponentRecordValue;
-};
-/** A structured platform record emitted while evaluating one component. */
-export type ComponentRecord = {
-    /** A platform-defined discriminator for the structured record. */
-    readonly kind: string;
-    /** The structured record payload, including pre-resolution output refs. */
-    readonly data: ComponentRecordValue;
-};
-/** A component record after every symbolic output ref has been resolved. */
-export type ResolvedComponentRecord = {
-    /** A platform-defined discriminator for the structured record. */
-    readonly kind: string;
-    /** The fully resolved structured record payload. */
-    readonly data: JsonValue;
-};
-/** A deterministic file emitted while evaluating one component. */
-export type ComponentArtifact = {
-    /** The deterministic path relative to this component's render output. */
-    readonly path: string;
-    /** The complete deterministic artifact contents. */
-    readonly contents: string;
-};
-/** Receives structured records emitted by a platform lifecycle. */
-export type RecordWriter = {
-    /** Writes one structured component record. */
-    write(record: ComponentRecord): void;
-};
-/** Receives deterministic artifacts emitted by a platform lifecycle. */
-export type ArtifactWriter = {
-    /** Writes one component artifact. */
-    write(artifact: ComponentArtifact): void;
-};
-/** The record and artifact destinations for one component evaluation. */
-export type ComponentWriters = {
-    /** Destination for structured platform records. */
-    readonly records: RecordWriter;
-    /** Destination for deterministic platform artifacts. */
-    readonly artifacts: ArtifactWriter;
-};
-/** Input used by a platform to create its build context. */
-export type PlatformContextInput<Environment extends RuntimeEnv> = BuildContext<Environment> & ComponentWriters;
-/** All records available to a platform world validator. */
-export type WorldRecords<Environment extends RuntimeEnv = RuntimeEnv> = {
-    /** The requesting world environment. */
-    readonly env: Environment;
-    /** Records grouped by manifest component identity. */
-    readonly components: Readonly<Record<string, readonly ResolvedComponentRecord[]>>;
-};
-/** A platform-provided validation check over a rendered world's records. */
-export type WorldValidator<Environment extends RuntimeEnv = RuntimeEnv> = (world: WorldRecords<Environment>) => void;
-/**
- * The lifecycle a platform uses to create context and finish an evaluation.
- *
- * `createContext` runs before the component build. `finalize` runs after a
- * successful build and may emit records or artifacts through the writers.
- */
-export type PlatformLifecycle<Environment extends RuntimeEnv, Context extends BuildContext<Environment>> = {
-    /** Creates the fully typed platform context before build runs. */
-    readonly createContext: (input: PlatformContextInput<Environment>) => Context;
-    /** Finalizes the platform after a successful build returns. */
-    readonly finalize: (ctx: Context, writers: ComponentWriters) => void;
-    /** Optional record-only checks run once per rendered world. */
-    readonly validators?: readonly WorldValidator<Environment>[];
-};
-/** The small core interface a platform implements. */
-export type PlatformSpec<Kind extends StableEnvKind, Context extends BuildContext<Env<Kind>>> = PlatformLifecycle<Env<Kind>, Context> & {
-    /** Every stable environment kind supported by this platform. */
-    readonly stableEnvKinds: readonly Kind[];
-};
-/** A symbolic reference to one typed component output. */
-export type Ref<T> = {
+/** A typed symbolic reference to another component output. */
+export interface Ref<T> {
     readonly [refTypeBrand]: T;
     readonly [refSymbol]: OutputRefData;
+}
+/** JSON-shaped data which may contain symbolic output references as leaves. */
+export type DeferredJsonValue = string | number | boolean | null | Ref<unknown> | readonly DeferredJsonValue[] | {
+    readonly [key: string]: DeferredJsonValue;
 };
-/** A runtime-introspectable schema carrying its inferred TypeScript type. */
-export type Schema<T> = {
+/** A platform record before world-level reference resolution. */
+export interface PendingComponentRecord {
+    /** Platform-defined record discriminator. */
+    readonly kind: string;
+    /** Deferred JSON record payload. */
+    readonly data: DeferredJsonValue;
+}
+/** Backward-compatible name for a pending component record. */
+export type ComponentRecord = PendingComponentRecord;
+/** Backward-compatible name for a deferred record value. */
+export type ComponentRecordValue = DeferredJsonValue;
+/** A canonical record constructed only by core's world resolver. */
+export interface ResolvedComponentRecord {
+    /** Platform-defined record discriminator. */
+    readonly kind: string;
+    /** Fully resolved JSON record payload. */
+    readonly data: JsonValue;
+    /** Compile-time evidence that core performed world resolution. */
+    readonly [resolvedRecordBrand]: true;
+}
+/** A deterministic component-relative file projected from resolved records. */
+export interface ComponentArtifact {
+    /** Lowercase portable path relative to the component output directory. */
+    readonly path: string;
+    /** Complete deterministic artifact contents. */
+    readonly contents: string;
+}
+/**
+ * Core-owned transactional record sink.
+ *
+ * Platforms may append and check liveness, but cannot inspect, seal, abort, or
+ * publish the underlying buffer.
+ */
+export interface RecordSink {
+    /** Appends one record while the component transaction is open. */
+    write(record: PendingComponentRecord): void;
+    /** Throws if the component transaction is no longer open. */
+    assertOpen(): void;
+}
+/** Input used by a platform to create one author-facing context. */
+export interface PlatformContextInput<StableKind extends string> extends BuildContext<Environment<StableKind>> {
+    /** Manifest component name for this evaluation. */
+    readonly componentName: string;
+    /** Private append-only record destination for this evaluation. */
+    readonly records: RecordSink;
+}
+/** Lifecycle stage reported when an evaluation transaction aborts. */
+export type EvaluationAbortStage = "build" | "pending-output-validation" | "finish-records";
+/** Exactly-once cleanup outcome after a context was successfully created. */
+export type ContextOutcome = {
+    readonly status: "sealed";
+} | {
+    readonly status: "aborted";
+    readonly stage: EvaluationAbortStage;
+};
+/** Immutable platform package identity attached to every component definition. */
+export interface PlatformIdentity {
+    /** Installed platform package name. */
+    readonly packageName: string;
+    /** Build-generated installed package version. */
+    readonly packageVersion: string;
+    /** Core/platform seam version. */
+    readonly apiVersion: 2;
+}
+/** Input to the only artifact-producing platform hook. */
+export interface ArtifactProjectionInput<StableKind extends string> {
+    /** Manifest component name owning these records. */
+    readonly componentName: string;
+    /** Effective environment used to produce the records. */
+    readonly env: Environment<StableKind>;
+    /** Canonical, branded records after world-level ref resolution. */
+    readonly records: readonly ResolvedComponentRecord[];
+}
+/** Precise location inside one canonical component record. */
+export interface RecordIssueLocation {
+    /** Zero-based index in the component record vector. */
+    readonly index: number;
+    /** RFC 6901 JSON Pointer; the empty string denotes the record root. */
+    readonly path: string;
+}
+/** A structured world-validation finding with a stable machine code. */
+export interface ValidationIssue {
+    /** Stable validator-specific issue code. */
+    readonly code: string;
+    /** Human-readable description of the problem. */
+    readonly message: string;
+    /** Component to which the issue belongs. */
+    readonly component: string;
+    /** Optional location in that component's resolved records. */
+    readonly record?: RecordIssueLocation;
+    /** Optional actionable repair guidance. */
+    readonly help?: string;
+}
+/** Validator ownership retained through worker and gate diagnostics. */
+export type ValidatorSource = "platform" | "policy";
+/** A validation issue after core attaches deterministic provenance. */
+export interface ReportedValidationIssue extends ValidationIssue {
+    /** Stable id of the validator that emitted this issue. */
+    readonly validator: string;
+    /** Whether the validator came from the platform or renderer policy. */
+    readonly source: ValidatorSource;
+}
+/** The reason a component does or does not contribute deployable state. */
+export type ComponentDisposition<StableKind extends string> = {
+    readonly kind: "materialized";
+} | {
+    readonly kind: "borrowed";
+    /** Stable environment whose live instance serves preview dependants. */
+    readonly from: StableKind;
+    /** Effective environment at which borrowed outputs were evaluated. */
+    readonly effectiveEnv: {
+        readonly kind: StableKind;
+    };
+};
+/** One component in the fully resolved validator view. */
+export interface ResolvedWorldComponent<StableKind extends string> {
+    /** Manifest component name. */
+    readonly name: string;
+    /** Environment actually selected for its context and params row. */
+    readonly effectiveEnv: Environment<StableKind>;
+    /** Materialized or explicit borrowed disposition. */
+    readonly disposition: ComponentDisposition<StableKind>;
+    /** Fully resolved component outputs. */
+    readonly outputs: JsonValue;
+    /** Evaluation evidence, including records from borrowed target builds. */
+    readonly records: readonly ResolvedComponentRecord[];
+    /** Actual component dependencies observed while resolving refs. */
+    readonly dependencies: readonly string[];
+}
+/** Complete resolved world passed to intrinsic and policy validators. */
+export interface ResolvedWorld<StableKind extends string> {
+    /** Environment requested by the renderer. */
+    readonly requestedEnv: Environment<StableKind>;
+    /** Components keyed by manifest identity. */
+    readonly components: Readonly<Record<string, ResolvedWorldComponent<StableKind>>>;
+}
+/** A named structured validator over one fully resolved world. */
+export interface WorldValidator<StableKind extends string> {
+    /** Stable lowercase validator identity. */
+    readonly id: string;
+    /** Returns every issue; throwing denotes an internal pipeline failure. */
+    validate(world: ResolvedWorld<StableKind>): readonly ValidationIssue[];
+}
+/** Complete core-facing contract implemented by one platform package. */
+export interface PlatformSpec<Kinds extends readonly [string, ...string[]], Context extends BuildContext<Environment<Kinds[number]>>> {
+    /** Immutable package and API identity. */
+    readonly identity: PlatformIdentity;
+    /** Ordered stable environment kinds supported by this platform. */
+    readonly stableEnvKinds: Kinds;
+    /** Creates the author-facing context before the build runs. */
+    createContext(input: PlatformContextInput<Kinds[number]>): Context;
+    /** Optional record-only work after pending outputs validate. */
+    finishRecords?(ctx: Context, records: RecordSink): void;
+    /** Runs exactly once after every successfully created context. */
+    dispose?(ctx: Context, outcome: ContextOutcome): void;
+    /** The only file-production hook; omission means no artifacts. */
+    project?(input: ArtifactProjectionInput<Kinds[number]>): readonly ComponentArtifact[];
+    /** Platform-intrinsic checks only; organization policy is renderer input. */
+    readonly validators?: readonly WorldValidator<Kinds[number]>[];
+}
+/** A runtime output schema carrying its inferred TypeScript value. */
+export interface Schema<T> {
     readonly [schemaTypeBrand]?: T;
     readonly [schemaSymbol]: SchemaData;
-};
+}
 /** A schema for arbitrary strings. */
 export type StringSchema = Schema<string> & {
-    /** Runtime schema discriminator. */
     readonly kind: "string";
 };
-/** A schema for HTTP or HTTPS URLs. */
+/** A schema for absolute HTTP or HTTPS URLs. */
 export type UrlSchema = Schema<string> & {
-    /** Runtime schema discriminator. */
     readonly kind: "url";
 };
-/** A schema for numbers. */
+/** A schema for finite numbers. */
 export type NumberSchema = Schema<number> & {
-    /** Runtime schema discriminator. */
     readonly kind: "number";
 };
-/** The named child schemas accepted by an object schema. */
+/** Named child schemas accepted by an object schema. */
 export type SchemaShape = {
     readonly [key: string]: Schema<unknown>;
 };
-/** A schema for a named object shape. */
-export type ObjectSchema<Shape extends SchemaShape> = Schema<InferShape<Shape>> & {
-    /** Runtime schema discriminator. */
+/** A schema for one named object shape. */
+export interface ObjectSchema<Shape extends SchemaShape> extends Schema<{
+    readonly [Key in keyof Shape]: InferSchema<Shape[Key]>;
+}> {
     readonly kind: "object";
-    /** Named child schemas. */
     readonly shape: Shape;
-};
-/** Infers the value type represented by a schema. */
-export type InferSchema<S extends Schema<unknown>> = S extends Schema<infer T> ? T : never;
-/** Infers the value object represented by a schema shape. */
+}
+/** Infers the concrete value represented by a schema. */
+export type InferSchema<S extends Schema<unknown>> = S extends Schema<infer Value> ? Value : never;
+/** Infers the concrete object represented by a schema shape. */
 export type InferShape<Shape extends SchemaShape> = {
-    readonly [K in keyof Shape]: InferSchema<Shape[K]>;
+    readonly [Key in keyof Shape]: InferSchema<Shape[Key]>;
 };
-/** Maps an output schema to the component module's symbolic ref object. */
+/** Maps a value to its pre-resolution shape with typed refs at any leaf. */
+export type BuildValue<T> = Ref<T> | (T extends string | number | boolean | null ? T : T extends readonly unknown[] ? {
+    readonly [Key in keyof T]: BuildValue<T[Key]>;
+} : T extends object ? {
+    readonly [Key in keyof T]: BuildValue<T[Key]>;
+} : T);
+/** Maps an output schema to the component module's public ref object. */
 export type RefObject<S extends Schema<unknown>> = S extends ObjectSchema<infer Shape> ? {
-    readonly [K in keyof Shape]: RefObjectForChild<Shape[K]>;
+    readonly [Key in keyof Shape]: RefObjectForChild<Shape[Key]>;
 } : Ref<InferSchema<S>>;
 type RefObjectForChild<S extends Schema<unknown>> = S extends ObjectSchema<SchemaShape> ? RefObject<S> : Ref<InferSchema<S>>;
-/** A build value, allowing typed refs anywhere a concrete value can appear. */
-export type BuildValue<T> = Ref<T> | (T extends string | number | boolean | null ? T : T extends readonly unknown[] ? {
-    readonly [K in keyof T]: BuildValue<T[K]>;
-} : T extends object ? {
-    readonly [K in keyof T]: BuildValue<T[K]>;
-} : T);
-/** Every environment row required by a platform, including one preview row. */
-export type ParamsByEnv<Kind extends StableEnvKind, P> = {
-    readonly [EnvironmentKind in Kind | "preview"]: P;
+/** Every environment row required by a platform, including preview. */
+export type ParamsByEnvironment<StableKind extends string> = {
+    readonly [Kind in StableKind | "preview"]: object;
 };
-/** A component specification with an exhaustive platform params table. */
-export type ComponentWithParamsSpec<S extends ObjectSchema<SchemaShape>, Kind extends StableEnvKind, Context extends BuildContext<Env<Kind>>, P> = {
-    /** The component's static, introspectable output contract. */
-    readonly outputs: S;
+/** Named homogeneous parameter-table annotation for platform re-exports. */
+export type ParamsTable<StableKind extends string, Row extends object> = {
+    readonly [Kind in StableKind | "preview"]: Row;
+};
+/** Backward-compatible name for a homogeneous parameter table. */
+export type ParamsByEnv<StableKind extends string, Row extends object> = ParamsTable<StableKind, Row>;
+/** Rejects rows outside a platform's stable kinds plus preview. */
+export type ExactParams<StableKind extends string, Rows extends ParamsByEnvironment<StableKind>> = Rows & {
+    readonly [Extra in Exclude<keyof Rows, StableKind | "preview">]: never;
+};
+/** Component author specification with an exhaustive exact params table. */
+export interface ComponentSpecWithParams<StableKind extends string, Context, Output extends ObjectSchema<SchemaShape>, Rows extends ParamsByEnvironment<StableKind>> {
+    /** Static, introspectable output contract. */
+    readonly outputs: Output;
     /**
-     * Can preview traffic use the dev instance?
-     *
-     * In preview worlds this is honored only when the component is neither a
-     * changed member nor a transitive reverse-dependent of one. When honored,
-     * the build runs at dev and its artifacts are discarded.
+     * If set, previews don't materialize this component. Any component that
+     * depends on it in a preview environment is configured against the named
+     * environment's instance of it.
      */
-    readonly fallThrough?: boolean;
-    /** One explicit parameter row for every platform environment kind. */
-    readonly params: ParamsByEnv<Kind, P>;
-    /** Produces this component's complete outputs for the selected row. */
-    readonly build: (ctx: Context, params: P) => BuildValue<InferSchema<S>>;
-};
-/** A component specification whose build has no params argument. */
-export type ComponentWithoutParamsSpec<S extends ObjectSchema<SchemaShape>, Kind extends StableEnvKind, Context extends BuildContext<Env<Kind>>> = {
-    /** The component's static, introspectable output contract. */
-    readonly outputs: S;
-    /**
-     * Can preview traffic use the dev instance?
-     *
-     * In preview worlds this is honored only when the component is neither a
-     * changed member nor a transitive reverse-dependent of one. When honored,
-     * the build runs at dev and its artifacts are discarded.
-     */
-    readonly fallThrough?: boolean;
-    /** Params are omitted when a build needs no environment parameter row. */
-    readonly params?: never;
-    /** Produces this component's complete outputs. */
-    readonly build: (ctx: Context) => BuildValue<InferSchema<S>>;
-};
-/** The renderer-visible definition stored behind the component symbol. */
-export type ComponentDefinition<S extends ObjectSchema<SchemaShape>> = {
-    /** The component's static, introspectable output contract. */
-    readonly outputs: S;
-    /** Whether preview traffic may use the dev instance when safe. */
-    readonly fallThrough: boolean;
-    /** The manifest identity bound by the renderer. */
-    componentName?: string;
-    readonly [componentRuntimeSymbol]: ComponentRuntime;
-};
-/** The default export shape of a component package. */
-export type ComponentModule<S extends ObjectSchema<SchemaShape>> = RefObject<S> & {
-    readonly [componentDefinitionSymbol]: ComponentDefinition<S>;
-};
-/** The fully typed `defineComponent` function a platform re-exports. */
-export interface PlatformDefineComponent<Kind extends StableEnvKind, Context extends BuildContext<Env<Kind>>> {
-    /** Defines a component with an exhaustive environment params table. */
-    <Shape extends SchemaShape, P>(spec: ComponentWithParamsSpec<ObjectSchema<Shape>, Kind, Context, P>): ComponentModule<ObjectSchema<Shape>>;
-    /** Defines a component whose build needs no params table. */
-    <Shape extends SchemaShape>(spec: ComponentWithoutParamsSpec<ObjectSchema<Shape>, Kind, Context>): ComponentModule<ObjectSchema<Shape>>;
+    readonly borrowForPreview?: StableKind;
+    /** One explicit row for every stable kind and preview, with no extras. */
+    readonly params: ExactParams<StableKind, Rows>;
+    /** Produces complete outputs using the selected params row. */
+    readonly build: (ctx: Context, params: Rows[StableKind | "preview"]) => BuildValue<InferSchema<Output>>;
 }
-/** The typed facade produced once a platform binds its core configuration. */
-export type Platform<Kind extends StableEnvKind, Context extends BuildContext<Env<Kind>>> = {
-    /** Every stable environment kind supported by the bound platform. */
-    readonly stableEnvKinds: readonly Kind[];
-    /** The platform-typed component definition function. */
-    readonly defineComponent: PlatformDefineComponent<Kind, Context>;
-    /** Formats one platform environment. */
-    readonly envName: (env: Env<Kind>) => string;
-    /** Parses a name using the platform's stable-kind set. */
-    readonly envFromName: (name: string) => Env<Kind>;
+/** Component author specification whose build has no params argument. */
+export interface ComponentSpecWithoutParams<StableKind extends string, Context, Output extends ObjectSchema<SchemaShape>> {
+    /** Static, introspectable output contract. */
+    readonly outputs: Output;
+    /**
+     * If set, previews don't materialize this component. Any component that
+     * depends on it in a preview environment is configured against the named
+     * environment's instance of it.
+     */
+    readonly borrowForPreview?: StableKind;
+    /** Params are unavailable on the params-free overload. */
+    readonly params?: never;
+    /** Produces complete outputs. */
+    readonly build: (ctx: Context) => BuildValue<InferSchema<Output>>;
+}
+/** Backward-compatible exported name for a params component specification. */
+export type ComponentWithParamsSpec<Output extends ObjectSchema<SchemaShape>, StableKind extends string, Context, Rows extends ParamsByEnvironment<StableKind>> = ComponentSpecWithParams<StableKind, Context, Output, Rows>;
+/** Backward-compatible exported name for a params-free component specification. */
+export type ComponentWithoutParamsSpec<Output extends ObjectSchema<SchemaShape>, StableKind extends string, Context> = ComponentSpecWithoutParams<StableKind, Context, Output>;
+/** Renderer-visible immutable definition stored behind the component symbol. */
+export interface ComponentDefinition<Output extends ObjectSchema<SchemaShape>, StableKind extends string = string> {
+    /** Static output contract. */
+    readonly outputs: Output;
+    /** Optional preview borrowing target selected by the component. */
+    readonly borrowForPreview?: StableKind;
+    readonly [componentRuntimeSymbol]: ComponentRuntime;
+}
+/** Default component-package export: output refs plus a symbol definition. */
+export type ComponentModule<Output extends ObjectSchema<SchemaShape>> = RefObject<Output> & {
+    readonly [componentDefinitionSymbol]: ComponentDefinition<Output>;
 };
-/** Inputs needed to evaluate one component. */
-export type EvaluationOptions<Environment extends RuntimeEnv = RuntimeEnv> = BuildContext<Environment> & ComponentWriters;
-/** The unresolved outputs produced by one component build. */
-export type EvaluationResult<T> = {
-    /** Outputs before cross-component refs are resolved. */
-    readonly outputs: BuildValue<T>;
-};
-/** Options controlling runtime schema validation. */
-export type ValidationOptions = {
-    /** Whether symbolic refs are accepted as valid pre-resolution values. */
-    readonly allowRefs?: boolean;
-};
-/** One precise schema validation mismatch. */
-export type ValidationIssue = {
-    /** The output path at which validation failed. */
-    readonly path: readonly string[];
-    /** The schema kind expected at the path. */
-    readonly expected: string;
-    /** The runtime value kind found at the path. */
-    readonly actual: string;
-};
-/** The public schema-construction vocabulary. */
-export type SchemaBuilder = {
+/** Fully platform-bound component definition helper. */
+export interface DefineComponent<StableKind extends string, Context> {
+    /** Defines a component with an exact exhaustive params table. */
+    <Shape extends SchemaShape, Rows extends ParamsByEnvironment<StableKind>>(spec: ComponentSpecWithParams<StableKind, Context, ObjectSchema<Shape>, Rows>): ComponentModule<ObjectSchema<Shape>>;
+    /** Defines a component with no params table. */
+    <Shape extends SchemaShape>(spec: ComponentSpecWithoutParams<StableKind, Context, ObjectSchema<Shape>>): ComponentModule<ObjectSchema<Shape>>;
+}
+/** Backward-compatible name for the bound component definition helper. */
+export type PlatformDefineComponent<StableKind extends string, Context> = DefineComponent<StableKind, Context>;
+/** Typed facade produced after a platform binds its core contract. */
+export interface PlatformBinding<StableKind extends string, Context> {
+    /** Ordered stable kinds supported by this platform. */
+    readonly stableEnvKinds: readonly StableKind[];
+    /** Platform-typed component definition helper. */
+    readonly defineComponent: DefineComponent<StableKind, Context>;
+    /** Parses the strict stable/TypeID environment grammar. */
+    parseEnvironment(name: string): Environment<StableKind>;
+    /** Formats and validates one platform environment. */
+    formatEnvironment(env: Environment<StableKind>): string;
+}
+/** Backward-compatible name for {@link PlatformBinding}. */
+export type Platform<StableKind extends string, Context> = PlatformBinding<StableKind, Context>;
+/** Public output-schema construction vocabulary. */
+export interface SchemaBuilder {
     /** Defines an object schema. */
     object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
     /** Defines a string schema. */
     string(): StringSchema;
     /** Defines an HTTP/HTTPS URL schema. */
     url(): UrlSchema;
-    /** Defines a number schema. */
+    /** Defines a finite number schema. */
     number(): NumberSchema;
-};
+}
 /** Constructors for Henosis output schemas. */
 export declare const h: SchemaBuilder;
-/** Formats a typed environment for manifest and output boundaries. */
-export declare function envName(env: RuntimeEnv): string;
-/** Parses an environment name using a platform's stable-kind set. */
-export declare function envFromName<const Kind extends StableEnvKind>(name: string, stableEnvKinds: readonly Kind[]): Env<Kind>;
-/** Binds a platform's env set, context lifecycle, writers, and validators. */
-export declare function definePlatform<const Kind extends StableEnvKind, Context extends BuildContext<Env<Kind>>>(spec: PlatformSpec<Kind, Context>): Platform<Kind, Context>;
-/** Gets the definition stored behind a component module's well-known symbol. */
-export declare function getComponentDefinition<S extends ObjectSchema<SchemaShape>>(component: ComponentModule<S>): ComponentDefinition<S>;
-/** Tests whether a value is a Henosis component default export. */
-export declare function isComponentModule(value: unknown): value is ComponentModule<ObjectSchema<SchemaShape>>;
-/** Assigns the manifest component identity used by symbolic output refs. */
-export declare function bindComponentIdentity<S extends ObjectSchema<SchemaShape>>(component: ComponentModule<S>, componentName: string): void;
-/** Runs one component through its platform lifecycle and build. */
-export declare function evaluateComponent<S extends ObjectSchema<SchemaShape>, Environment extends RuntimeEnv>(component: ComponentModule<S>, opts: EvaluationOptions<Environment>): EvaluationResult<InferSchema<S>>;
-/** Runs each distinct platform validator over the rendered world's records. */
-export declare function runWorldValidators(components: readonly ComponentModule<ObjectSchema<SchemaShape>>[], world: WorldRecords): void;
-/** Validates a value against an introspectable Henosis schema. */
-export declare function validateSchema<S extends Schema<unknown>>(schema: S, value: unknown, opts?: ValidationOptions): ValidationIssue[];
-/** Tests whether a value is a symbolic Henosis output ref. */
-export declare function isRef(value: unknown): value is Ref<unknown>;
-/** Gets the source component identity carried by a symbolic ref. */
-export declare function refSourceComponent(value: Ref<unknown>): string | undefined;
-/** Gets the output path carried by a symbolic ref. */
-export declare function refOutputPath(value: Ref<unknown>): readonly string[];
-type LeafKind = "string" | "url" | "number";
-type SchemaKind = LeafKind | "object";
-type SchemaData = {
-    readonly kind: SchemaKind;
+/** Package paths retained for actionable duplicate/mixed diagnostics. */
+export interface ModuleOrigin {
+    /** Installed component package name. */
+    readonly componentPackage: string;
+    /** Resolved component module path. */
+    readonly componentPath: string;
+    /** Resolved platform package path used by this component. */
+    readonly platformPath: string;
+}
+/** Imported component default plus its resolved package provenance. */
+export interface ImportedComponent {
+    /** Manifest component name. */
+    readonly name: string;
+    /** Imported default export. */
+    readonly component: ComponentModule<ObjectSchema<SchemaShape>>;
+    /** Resolved component and platform origins. */
+    readonly origin: ModuleOrigin;
+}
+/** Immutable platform facts discovered from component defaults. */
+export interface ComponentPlatformInfo {
+    /** Discovered platform package identity. */
+    readonly identity: PlatformIdentity;
+    /** Discovered ordered stable environment kinds. */
+    readonly stableEnvKinds: readonly string[];
+}
+/** One imported component prepared for world execution. */
+export interface WorldPlanComponent extends ImportedComponent {
+    /** Unchanged resolved manifest image pin. */
+    readonly image: ImageRef;
+}
+/** Complete input to core-owned world execution. */
+export interface WorldPlan<StableKind extends string = string> {
+    /** Requested render environment. */
+    readonly requestedEnv: Environment<StableKind>;
+    /** Imported defaults and resolved pins. */
+    readonly components: readonly WorldPlanComponent[];
+    /** Consumer-to-dependency graph used for preview reverse closure and order. */
+    readonly dependencies: Readonly<Record<string, readonly string[]>>;
+    /** Preview members changed by this manifest or gate candidate. */
+    readonly changed: readonly string[];
+    /** Optional organization policy checks. */
+    readonly policyValidators?: readonly WorldValidator<StableKind>[];
+}
+/** Persistable result for one materialized or borrowed component. */
+export interface RenderedWorldComponent<StableKind extends string> {
+    /** Effective context/params environment. */
+    readonly effectiveEnv: Environment<StableKind>;
+    /** Explicit materialized or borrowed disposition. */
+    readonly disposition: ComponentDisposition<StableKind>;
+    /** Fully resolved outputs. */
+    readonly outputs: JsonValue;
+    /** Canonical deploy records; empty for borrowed components. */
+    readonly records: readonly ResolvedComponentRecord[];
+    /** Projected files; empty for borrowed components. */
+    readonly artifacts: readonly ComponentArtifact[];
+    /** Actual dependencies observed while resolving refs. */
+    readonly dependencies: readonly string[];
+}
+/** Complete render result after build, resolution, validation, and projection. */
+export interface RenderResult<StableKind extends string = string> {
+    /** Requested render environment. */
+    readonly requestedEnv: Environment<StableKind>;
+    /** Persistable component results keyed by manifest name. */
+    readonly components: Readonly<Record<string, RenderedWorldComponent<StableKind>>>;
+}
+/** Stable core-owned pipeline stages used by worker and gate diagnostics. */
+export type PipelineStage = "platform-discovery" | "environment-validation" | "create-context" | "build" | "pending-output-validation" | "finish-records" | "dispose" | "resolution" | "resolved-output-validation" | "validator" | "world-validation" | "projection" | "artifact-validation";
+/** Structured pipeline failure preserved at process boundaries. */
+export interface PipelineFailure {
+    /** Stable stage at which execution failed. */
+    readonly stage: PipelineStage;
+    /** Component responsible when the failure is component-scoped. */
+    readonly component?: string;
+    /** Human-readable primary error. */
+    readonly message: string;
+    /** Complete structured validator findings when policy rejected the world. */
+    readonly issues?: readonly ReportedValidationIssue[];
+}
+/** Error wrapper carrying one renderer-safe structured pipeline failure. */
+export declare class PipelineError extends Error {
+    readonly failure: PipelineFailure;
+    /** Creates a pipeline error from its stable serialized failure. */
+    constructor(failure: PipelineFailure);
+}
+/** Inputs for the public resolved-record test and platform harness. */
+export interface PendingWorldForResolution {
+    readonly [component: string]: {
+        /** Producer definition used as the immutable ref identity. */
+        readonly definition: ComponentDefinition<ObjectSchema<SchemaShape>>;
+        /** Pending component outputs. */
+        readonly outputs: DeferredJsonValue;
+        /** Pending component records. */
+        readonly records: readonly PendingComponentRecord[];
+    };
+}
+/** One component returned by the core-owned resolver. */
+export interface ResolvedPendingComponent {
+    /** Fully resolved outputs. */
+    readonly outputs: JsonValue;
+    /** Branded fully resolved records. */
+    readonly records: readonly ResolvedComponentRecord[];
+    /** Actual producer identities observed in outputs and records. */
+    readonly dependencies: readonly string[];
+}
+/** Public resolver result whose records can legally reach a projector. */
+export interface ResolvedPendingWorld {
+    /** Resolved components keyed by manifest identity. */
+    readonly components: Readonly<Record<string, ResolvedPendingComponent>>;
+}
+/** Options controlling output schema validation. */
+export interface ValidationOptions {
+    /** Whether symbolic refs are legal at the validation point. */
+    readonly allowRefs?: boolean;
+}
+/** One precise output-schema mismatch. */
+export interface OutputValidationIssue {
+    /** Dot-path segments from the output root. */
+    readonly path: readonly string[];
+    /** Schema kind expected at the path. */
+    readonly expected: string;
+    /** Runtime kind found at the path. */
+    readonly actual: string;
+}
+interface ComponentRuntime {
+    readonly descriptor: PlatformDescriptor;
+    readonly params?: Readonly<Record<string, object>>;
+    readonly build: (ctx: unknown, params?: object) => unknown;
+}
+interface PlatformDescriptor {
+    readonly identity: PlatformIdentity;
+    readonly stableEnvKinds: readonly string[];
+    readonly createContext: (input: PlatformContextInput<string>) => unknown;
+    readonly finishRecords?: (ctx: unknown, records: RecordSink) => void;
+    readonly dispose?: (ctx: unknown, outcome: ContextOutcome) => void;
+    readonly project?: (input: ArtifactProjectionInput<string>) => readonly ComponentArtifact[];
+    readonly validators: readonly WorldValidator<string>[];
+}
+interface SchemaData {
+    readonly kind: "string" | "url" | "number" | "object";
     readonly shape?: SchemaShape;
-};
-type RuntimeEvaluationOptions = BuildContext<RuntimeEnv> & ComponentWriters;
-type ComponentRuntime = {
-    readonly evaluate: (opts: RuntimeEvaluationOptions) => BuildValue<unknown>;
-    readonly validators: readonly WorldValidator[];
-};
-type OutputRefData = {
+}
+interface OutputRefData {
     readonly source: ComponentDefinition<ObjectSchema<SchemaShape>>;
     readonly path: readonly string[];
+}
+/**
+ * Binds a frozen platform descriptor and returns its sole author-facing helper.
+ */
+export declare function definePlatform<const Kinds extends readonly [string, ...string[]], Context extends BuildContext<Environment<Kinds[number]>>>(spec: PlatformSpec<Kinds, Context>): PlatformBinding<Kinds[number], Context>;
+/** Gets the immutable definition stored behind a component's well-known symbol. */
+export declare function getComponentDefinition<Output extends ObjectSchema<SchemaShape>>(component: ComponentModule<Output>): ComponentDefinition<Output>;
+/** Tests whether a value is a Henosis component default export. */
+export declare function isComponentModule(value: unknown): value is ComponentModule<ObjectSchema<SchemaShape>>;
+/** Tests whether a value is a symbolic Henosis output ref. */
+export declare function isRef(value: unknown): value is Ref<unknown>;
+/** Gets the immutable producer definition carried by a symbolic ref. */
+export declare function refSourceDefinition(value: Ref<unknown>): ComponentDefinition<ObjectSchema<SchemaShape>>;
+/** Gets the output path carried by a symbolic ref. */
+export declare function refOutputPath(value: Ref<unknown>): readonly string[];
+/**
+ * Discovers and verifies a world's one platform descriptor from defaults only.
+ */
+export declare function inspectWorldPlatform(components: readonly ImportedComponent[]): ComponentPlatformInfo;
+/**
+ * Evaluates, resolves, validates, and projects one world with no partial result.
+ */
+export declare function evaluateWorld<StableKind extends string>(plan: WorldPlan<StableKind>): RenderResult<StableKind>;
+/** One success or failure cell returned by the in-process widened-gate harness. */
+export type GateWorldResult<StableKind extends string> = {
+    readonly environment: Environment<StableKind>;
+    readonly ok: true;
+    readonly result: RenderResult<StableKind>;
+} | {
+    readonly environment: Environment<StableKind>;
+    readonly ok: false;
+    readonly failure: PipelineFailure;
 };
+/**
+ * Runs every discovered stable kind plus the fixed representative preview.
+ * The preview uses the supplied changed set, so unchanged eligible components
+ * can borrow while changed members and reverse-dependants always materialize.
+ */
+export declare function evaluateGateWorlds<StableKind extends string>(opts: {
+    /** Imported candidate-world components. */
+    readonly components: readonly WorldPlanComponent[];
+    /** Consumer-to-dependency graph. */
+    readonly dependencies: Readonly<Record<string, readonly string[]>>;
+    /** Candidate's own changed component names. */
+    readonly changed: readonly string[];
+    /** Disables non-dev cells when false; dev is unconditional. */
+    readonly widened?: boolean;
+    /** Optional organization policy checks. */
+    readonly policyValidators?: readonly WorldValidator<StableKind>[];
+}): readonly GateWorldResult<StableKind>[];
+/**
+ * Resolves all outputs and record trees in one definition-identity world pass.
+ * This function is the sole public constructor of branded resolved records.
+ */
+export declare function resolvePendingWorld(pending: PendingWorldForResolution): ResolvedPendingWorld;
+/** Runs intrinsic then policy validators and returns every ordered issue. */
+export declare function runWorldValidators<StableKind extends string>(world: ResolvedWorld<StableKind>, platformValidators: readonly WorldValidator<StableKind>[], policyValidators: readonly WorldValidator<StableKind>[]): readonly ReportedValidationIssue[];
+/** Validates a value against an introspectable Henosis output schema. */
+export declare function validateSchema<SchemaType extends Schema<unknown>>(schema: SchemaType, value: unknown, opts?: ValidationOptions): OutputValidationIssue[];
+/** Validates, duplicate-checks, and code-unit sorts projected artifacts. */
+export declare function validateAndSortArtifacts(artifacts: readonly ComponentArtifact[]): readonly ComponentArtifact[];
+/** Code-unit comparison, deterministic across locale and ICU versions. */
+export declare function compareCodeUnits(left: string, right: string): number;
+/** Formats one canonical stable or preview environment identity. */
+export declare function formatEnvironment<StableKind extends string>(env: Environment<StableKind>): string;
+/** Backward-compatible short environment formatter. */
+export declare function envName(env: RuntimeEnv): string;
+/** Parses the strict stable/TypeID grammar with a marked legacy-preview shim. */
+export declare function parseEnvironmentName<StableKind extends string>(stableKinds: readonly StableKind[], name: string): Environment<StableKind>;
+/** Backward-compatible environment parser with the old argument order. */
+export declare function envFromName<StableKind extends string>(name: string, stableKinds: readonly StableKind[]): Environment<StableKind>;
+/** Validates a programmatic environment against a discovered platform. */
+export declare function assertSupportedEnvironment(stableKinds: readonly string[], env: Environment<string>): void;
+/** Encodes a UUID as one canonical lowercase TypeID. */
+export declare function typeIdFromUuid(prefix: string, uuid: string): string;
+/** Decodes a canonical TypeID and returns its lowercase UUID. */
+export declare function uuidFromTypeId(typeId: string, expectedPrefix?: string): string;
+/**
+ * Tests the temporary legacy `preview-...` compatibility grammar.
+ *
+ * LIVE-V1-COMPAT: delete when the bot emits TypeIDs and no active manifest
+ * contains a legacy preview identity.
+ */
+export declare function isLegacyPreviewEnvironmentName(name: string): boolean;
 export {};
 //# sourceMappingURL=index.d.ts.map

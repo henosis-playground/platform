@@ -1,10 +1,9 @@
 import type {
   BuildValue,
   ComponentModule,
-  ComponentWithParamsSpec,
+  DefineComponent,
   InferSchema,
   ObjectSchema,
-  PlatformDefineComponent,
   SchemaShape,
 } from "@henosis/core";
 import type { BuildContext, Env, StableEnvKind } from "./index.js";
@@ -20,12 +19,11 @@ export type V1CompatibilityComponentSpec<
 > = {
   readonly outputs: S;
   /**
-   * Can preview traffic use the dev instance?
-   *
-   * In preview worlds this is honored only outside the changed reverse
-   * dependency closure. When honored, artifacts are discarded.
-  */
-  readonly fallThrough?: boolean;
+   * If set, previews don't materialize this component. Any component that
+   * depends on it in a preview environment is configured against the named
+   * environment's instance of it.
+   */
+  readonly borrowForPreview?: StableEnvKind;
   /** The v1 compatibility shape never accepts a params table. */
   readonly params?: never;
   readonly build: (
@@ -37,16 +35,8 @@ export type V1CompatibilityComponentSpec<
 /**
  * The mock platform's v2 definition function plus its temporary v1 overload.
  */
-export interface PlatformMockDefineComponent {
-  /** Defines a v2 component with an exhaustive environment params table. */
-  <Shape extends SchemaShape, P>(
-    spec: ComponentWithParamsSpec<
-      ObjectSchema<Shape>,
-      StableEnvKind,
-      BuildContext,
-      P
-    >,
-  ): ComponentModule<ObjectSchema<Shape>>;
+export interface PlatformMockDefineComponent
+  extends DefineComponent<StableEnvKind, BuildContext> {
   /**
    * Defines a params-free component.
    *
@@ -60,7 +50,7 @@ export interface PlatformMockDefineComponent {
 
 type RuntimeSpec = {
   readonly outputs: ObjectSchema<SchemaShape>;
-  readonly fallThrough?: boolean;
+  readonly borrowForPreview?: StableEnvKind;
   readonly params?: Readonly<Record<string, unknown>>;
   readonly build: (...args: never[]) => unknown;
 };
@@ -72,7 +62,7 @@ type RuntimeDefineComponent = (spec: RuntimeSpec) => unknown;
 // services migrate to v2.
 /** @internal Adapts the live v1 callback shape to the v2 platform lifecycle. */
 export function withV1BuildCompatibility(
-  defineV2: PlatformDefineComponent<StableEnvKind, BuildContext>,
+  defineV2: DefineComponent<StableEnvKind, BuildContext>,
 ): PlatformMockDefineComponent {
   const invokeV2 = defineV2 as unknown as RuntimeDefineComponent;
   return ((spec: RuntimeSpec): unknown => {
@@ -80,7 +70,7 @@ export function withV1BuildCompatibility(
       const legacyBuild = spec.build;
       return invokeV2({
         outputs: spec.outputs,
-        fallThrough: spec.fallThrough,
+        borrowForPreview: spec.borrowForPreview,
         build: ((ctx: BuildContext) =>
           legacyBuild(ctx as never, ctx.env as never)) as RuntimeSpec["build"],
       });

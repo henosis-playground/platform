@@ -1,178 +1,315 @@
 import { describe, expect, it } from "vitest";
-import { bindComponentIdentity, componentDefinitionSymbol, definePlatform, evaluateComponent, getComponentDefinition, h, isRef, refOutputPath, refSourceComponent, runWorldValidators, validateSchema, } from "../src/index.js";
-const stableEnvKinds = ["local", "production"];
-const validatedWorlds = [];
-const testPlatform = definePlatform({
-    stableEnvKinds,
-    createContext: ({ env, image, records }) => ({
-        env,
-        image,
-        emit: (label) => records.write({ kind: "test", data: { label } }),
-    }),
-    finalize: (ctx, { artifacts }) => {
-        artifacts.write({ path: "env.txt", contents: ctx.env.kind });
-    },
-    validators: [
-        (world) => {
-            validatedWorlds.push(world.env.kind);
-        },
-    ],
-});
-function evaluate(component, env) {
-    const records = [];
-    const artifacts = [];
-    const result = evaluateComponent(component, {
-        env,
-        image: { ref: "test:ref", digest: "sha256:abc" },
-        records: { write: (record) => records.push(record) },
-        artifacts: { write: (artifact) => artifacts.push(artifact) },
-    });
-    return { ...result, records, artifacts };
+import { PipelineError, definePlatform, evaluateWorld, getComponentDefinition, h, inspectWorldPlatform, isLegacyPreviewEnvironmentName, isRef, parseEnvironmentName, refOutputPath, refSourceDefinition, representativePreviewName, typeIdFromUuid, uuidFromTypeId, } from "../src/index.js";
+const stableEnvKinds = ["dev", "prod"];
+function origin(name, platformPath = "/platform/one") {
+    return {
+        componentPackage: `@henosis/${name}`,
+        componentPath: `/components/${name}/src/index.ts`,
+        platformPath,
+    };
 }
-describe("defineComponent", () => {
-    it("exports only output refs as public properties", () => {
-        const component = testPlatform.defineComponent({
+function plan(components, opts = {}) {
+    return {
+        requestedEnv: opts.env ?? { kind: "dev" },
+        components: Object.entries(components).map(([name, component]) => ({
+            name,
+            component,
+            origin: origin(name),
+            image: { ref: `${name}-ref`, digest: `sha256:${name}` },
+        })),
+        dependencies: opts.dependencies ?? {},
+        changed: opts.changed ?? Object.keys(components),
+    };
+}
+describe("component definition and exact params", () => {
+    const platform = definePlatform({
+        identity: {
+            packageName: "@henosis/test-platform",
+            packageVersion: "1.0.0",
+            apiVersion: 2,
+        },
+        stableEnvKinds,
+        createContext: ({ env, image, records }) => ({
+            env,
+            image,
+            emit: (value) => records.write({ kind: "test", data: value }),
+        }),
+    });
+    it("exports output refs whose immutable source is the definition object", () => {
+        const component = platform.defineComponent({
             outputs: h.object({
                 api: h.url(),
                 nested: h.object({ label: h.string() }),
             }),
             build: () => ({
-                api: "https://service-a-local.henosis.example",
+                api: "https://service.example",
                 nested: { label: "ready" },
             }),
         });
-        bindComponentIdentity(component, "service-a");
         expect(Object.keys(component)).toEqual(["api", "nested"]);
-        expect(component.api).toSatisfy(isRef);
-        expect(component.nested.label).toSatisfy(isRef);
-        expect(refSourceComponent(component.api)).toBe("service-a");
+        expect(isRef(component.api)).toBe(true);
+        expect(refSourceDefinition(component.api)).toBe(getComponentDefinition(component));
         expect(refOutputPath(component.nested.label)).toEqual(["nested", "label"]);
-        expect(getComponentDefinition(component)).toBe(component[componentDefinitionSymbol]);
     });
-    it("rejects degenerate output names loudly", () => {
-        expect(() => testPlatform.defineComponent({
-            outputs: h.object({
-                "api-url": h.url(),
-            }),
-            build: () => ({
-                "api-url": "https://service-a-local.henosis.example",
-            }),
-        })).toThrow("dot-accessible identifiers");
-        expect(() => testPlatform.defineComponent({
-            outputs: h.object({
-                constructor: h.string(),
-            }),
-            build: () => ({ constructor: "bad" }),
-        })).toThrow("reserved object property names");
-    });
-    it("keeps output and ref types connected", () => {
-        const producer = testPlatform.defineComponent({
-            outputs: h.object({ api: h.url() }),
-            build: () => ({ api: "https://service-a-local.henosis.example" }),
-        });
-        testPlatform.defineComponent({
-            outputs: h.object({
-                app: h.url(),
-                upstream: h.url(),
-            }),
-            build: () => {
-                const upstream = producer.api;
-                void upstream;
-                // @ts-expect-error missing is not an output ref.
-                void producer.missing;
-                return {
-                    app: "https://service-b-local.henosis.example",
-                    upstream: producer.api,
-                };
-            },
-        });
-    });
-});
-describe("generic platform evaluation", () => {
-    it("selects an exhaustive params row and infers its legible row type", () => {
-        const component = testPlatform.defineComponent({
+    it("widens inferred rows while selecting exactly one environment row", () => {
+        const component = platform.defineComponent({
             outputs: h.object({ endpoint: h.url(), replicas: h.number() }),
             params: {
-                local: { host: "local.example", replicas: 1 },
-                production: { host: "prod.example", replicas: 3 },
+                dev: { host: "dev.example", replicas: 1 },
+                prod: { host: "prod.example", replicas: 3 },
                 preview: { host: "preview.example", replicas: 1 },
             },
             build: (ctx, params) => {
-                const inferred = params;
-                ctx.emit(inferred.host);
+                const row = params;
+                ctx.emit({ host: row.host });
                 return {
-                    endpoint: `https://${inferred.host}`,
-                    replicas: inferred.replicas,
+                    endpoint: `https://${row.host}`,
+                    replicas: row.replicas,
                 };
             },
         });
-        expect(evaluate(component, { kind: "production" })).toEqual({
-            outputs: { endpoint: "https://prod.example", replicas: 3 },
-            records: [{ kind: "test", data: { label: "prod.example" } }],
-            artifacts: [{ path: "env.txt", contents: "production" }],
+        expect(evaluateWorld(plan({ sample: component })).components.sample).toMatchObject({
+            outputs: { endpoint: "https://dev.example", replicas: 1 },
+            records: [{ kind: "test", data: { host: "dev.example" } }],
         });
-        expect(evaluate(component, { kind: "preview", id: "preview-42" }).outputs).toEqual({
-            endpoint: "https://preview.example",
-            replicas: 1,
-        });
-    });
-    it("requires every stable kind and preview in params", () => {
-        testPlatform.defineComponent({
-            outputs: h.object({ value: h.string() }),
-            // @ts-expect-error params must include the production row.
-            params: {
-                local: { value: "local" },
-                preview: { value: "preview" },
-            },
-            build: (_ctx, params) => ({ value: params.value }),
-        });
-    });
-    it("creates ctx before build, finalizes after build, and runs validators", () => {
-        const component = testPlatform.defineComponent({
-            outputs: h.object({ value: h.string() }),
-            build: (ctx) => {
-                ctx.emit(ctx.env.kind);
-                return { value: ctx.env.kind };
-            },
-        });
-        bindComponentIdentity(component, "sample");
-        const evaluated = evaluate(component, { kind: "local" });
-        expect(evaluated.records).toEqual([
-            { kind: "test", data: { label: "local" } },
-        ]);
-        expect(evaluated.artifacts).toEqual([
-            { path: "env.txt", contents: "local" },
-        ]);
-        validatedWorlds.length = 0;
-        runWorldValidators([component], {
-            env: { kind: "local" },
-            components: { sample: evaluated.records },
-        });
-        expect(validatedWorlds).toEqual(["local"]);
-    });
-    it("generalizes env name parsing to the platform's stable set", () => {
-        expect(testPlatform.envFromName("local")).toEqual({ kind: "local" });
-        expect(testPlatform.envFromName("preview-special")).toEqual({
-            kind: "preview",
-            id: "preview-special",
-        });
-        expect(testPlatform.envName({ kind: "production" })).toBe("production");
     });
 });
-describe("validation", () => {
-    it("validates leaf schemas and permits refs before resolution", () => {
-        const producer = testPlatform.defineComponent({
-            outputs: h.object({ api: h.url() }),
-            build: () => ({ api: "https://service-a-local.henosis.example" }),
+describe("transactional lifecycle", () => {
+    it("seals successful sinks, rejects retained writes, and disposes exactly once", () => {
+        let retained;
+        const outcomes = [];
+        const platform = definePlatform({
+            identity: {
+                packageName: "@henosis/lifecycle",
+                packageVersion: "1.0.0",
+                apiVersion: 2,
+            },
+            stableEnvKinds,
+            createContext: ({ env, image, records }) => {
+                retained = records;
+                return {
+                    env,
+                    image,
+                    emit: (value) => records.write({ kind: "build", data: value }),
+                };
+            },
+            finishRecords: (_ctx, records) => {
+                records.write({ kind: "finish", data: { ok: true } });
+            },
+            dispose: (_ctx, outcome) => outcomes.push(outcome),
         });
-        const schema = h.object({ upstream: h.url() });
-        expect(validateSchema(schema, { upstream: producer.api }, { allowRefs: true })).toEqual([]);
-        expect(validateSchema(schema, { upstream: "not a url" })).toEqual([
-            { path: ["upstream"], expected: "url", actual: "string" },
+        const component = platform.defineComponent({
+            outputs: h.object({ value: h.string() }),
+            build: (ctx) => {
+                ctx.emit({ value: "ready" });
+                return { value: "ready" };
+            },
+        });
+        expect(evaluateWorld(plan({ sample: component })).components.sample?.records).toEqual([
+            { kind: "build", data: { value: "ready" } },
+            { kind: "finish", data: { ok: true } },
         ]);
-        expect(validateSchema(h.object({ port: h.number() }), { port: "5432" })).toEqual([
-            { path: ["port"], expected: "number", actual: "string" },
+        expect(outcomes).toEqual([{ status: "sealed" }]);
+        expect(() => retained?.write({ kind: "late", data: null })).toThrow("Record transaction is sealed");
+    });
+    it.each([
+        {
+            label: "build",
+            expectedStage: "build",
+            buildValue: "throw",
+            finishThrows: false,
+        },
+        {
+            label: "pending output validation",
+            expectedStage: "pending-output-validation",
+            buildValue: "invalid",
+            finishThrows: false,
+        },
+        {
+            label: "finish records",
+            expectedStage: "finish-records",
+            buildValue: "valid",
+            finishThrows: true,
+        },
+    ])("aborts and disposes exactly once after a $label failure", (testCase) => {
+        const outcomes = [];
+        let retained;
+        const platform = definePlatform({
+            identity: {
+                packageName: "@henosis/lifecycle",
+                packageVersion: "1.0.0",
+                apiVersion: 2,
+            },
+            stableEnvKinds,
+            createContext: ({ env, image, records }) => {
+                retained = records;
+                return {
+                    env,
+                    image,
+                    emit: (value) => records.write({ kind: "partial", data: value }),
+                };
+            },
+            finishRecords: () => {
+                if (testCase.finishThrows)
+                    throw new Error("finish exploded");
+            },
+            dispose: (_ctx, outcome) => outcomes.push(outcome),
+        });
+        const component = platform.defineComponent({
+            outputs: h.object({ value: h.string() }),
+            build: (ctx) => {
+                ctx.emit({ before: "failure" });
+                if (testCase.buildValue === "throw")
+                    throw new Error("build exploded");
+                return {
+                    value: testCase.buildValue === "invalid" ? 42 : "ready",
+                };
+            },
+        });
+        let caught;
+        try {
+            evaluateWorld(plan({ sample: component }));
+        }
+        catch (error) {
+            caught = error;
+        }
+        expect(caught).toBeInstanceOf(PipelineError);
+        expect(caught.failure).toMatchObject({
+            stage: testCase.expectedStage,
+            component: "sample",
+        });
+        expect(outcomes).toEqual([
+            { status: "aborted", stage: testCase.expectedStage },
         ]);
+        expect(() => retained?.write({ kind: "late", data: null })).toThrow("Record transaction is aborted");
+    });
+});
+describe("borrowing and core-owned resolution", () => {
+    const projected = [];
+    const platform = definePlatform({
+        identity: {
+            packageName: "@henosis/borrow-platform",
+            packageVersion: "1.0.0",
+            apiVersion: 2,
+        },
+        stableEnvKinds,
+        createContext: ({ env, image, records }) => ({
+            env,
+            image,
+            emit: (value) => records.write({ kind: "test", data: value }),
+        }),
+        project: ({ componentName, records }) => {
+            projected.push({ component: componentName, records });
+            return [{ path: "records.json", contents: JSON.stringify(records) }];
+        },
+    });
+    function component(name, dependency) {
+        return platform.defineComponent({
+            outputs: h.object({ endpoint: h.url() }),
+            borrowForPreview: "dev",
+            params: {
+                dev: { suffix: "dev" },
+                prod: { suffix: "prod" },
+                preview: { suffix: "preview" },
+            },
+            build: (ctx, params) => {
+                ctx.emit({ dependency: dependency ?? "none" });
+                return {
+                    endpoint: dependency ?? `https://${name}-${params.suffix}.example`,
+                };
+            },
+        });
+    }
+    it("never borrows a changed member or transitive reverse-dependent", () => {
+        projected.length = 0;
+        const serviceA = component("a");
+        const serviceB = component("b", serviceA.endpoint);
+        const serviceC = component("c");
+        const result = evaluateWorld(plan({ a: serviceA, b: serviceB, c: serviceC }, {
+            env: { kind: "preview", id: representativePreviewName },
+            changed: ["a"],
+            dependencies: { a: [], b: ["a"], c: [] },
+        }));
+        expect(result.components.a?.disposition).toEqual({ kind: "materialized" });
+        expect(result.components.b?.disposition).toEqual({ kind: "materialized" });
+        expect(result.components.c).toMatchObject({
+            effectiveEnv: { kind: "dev" },
+            disposition: {
+                kind: "borrowed",
+                from: "dev",
+                effectiveEnv: { kind: "dev" },
+            },
+            outputs: { endpoint: "https://c-dev.example" },
+            records: [],
+            artifacts: [],
+        });
+        expect(projected.map((entry) => entry.component)).toEqual(["a", "b"]);
+    });
+    it("resolves a definition-identity Ref in records before projection", () => {
+        projected.length = 0;
+        const producer = component("producer");
+        const consumer = component("consumer", producer.endpoint);
+        const result = evaluateWorld(plan({ producer, consumer }, { dependencies: { producer: [], consumer: ["producer"] } }));
+        expect(result.components.consumer?.records).toEqual([
+            {
+                kind: "test",
+                data: { dependency: "https://producer-dev.example" },
+            },
+        ]);
+        expect(result.components.consumer?.artifacts[0]?.contents).toContain("https://producer-dev.example");
+    });
+});
+describe("platform discovery and environment grammar", () => {
+    function platform(packageVersion, packageName = "@henosis/discovery") {
+        return definePlatform({
+            identity: { packageName, packageVersion, apiVersion: 2 },
+            stableEnvKinds,
+            createContext: ({ env, image }) => ({ env, image }),
+        });
+    }
+    function imported(name, component, platformPath) {
+        return { name, component, origin: origin(name, platformPath) };
+    }
+    it("discovers a frozen descriptor from defaults and diagnoses duplicates/mixes", () => {
+        const first = platform("1.0.0");
+        const duplicate = platform("1.0.0");
+        const mixed = platform("2.0.0");
+        const make = (bound) => bound.defineComponent({
+            outputs: h.object({ value: h.string() }),
+            build: () => ({ value: "ok" }),
+        });
+        expect(inspectWorldPlatform([imported("a", make(first), "/p/one")])).toEqual({
+            identity: {
+                packageName: "@henosis/discovery",
+                packageVersion: "1.0.0",
+                apiVersion: 2,
+            },
+            stableEnvKinds: ["dev", "prod"],
+        });
+        expect(() => inspectWorldPlatform([
+            imported("a", make(first), "/p/one"),
+            imported("b", make(duplicate), "/p/two"),
+        ])).toThrow(/duplicate platform installation.*\/p\/one.*\/p\/two/);
+        expect(() => inspectWorldPlatform([
+            imported("a", make(first), "/p/one"),
+            imported("b", make(mixed), "/p/two"),
+        ])).toThrow(/mixed platforms.*1\.0\.0.*2\.0\.0/);
+    });
+    it("strictly parses TypeIDs, retains only the marked legacy shim, and roundtrips the representative", () => {
+        const uuid = "728b0fd3-0c7f-4202-843f-f78b16bc3d04";
+        expect(typeIdFromUuid("preview", uuid)).toBe(representativePreviewName);
+        expect(uuidFromTypeId(representativePreviewName, "preview")).toBe(uuid);
+        expect(parseEnvironmentName(stableEnvKinds, representativePreviewName)).toEqual({
+            kind: "preview",
+            id: representativePreviewName,
+        });
+        expect(isLegacyPreviewEnvironmentName("preview-legacy-42")).toBe(true);
+        expect(parseEnvironmentName(stableEnvKinds, "preview-legacy-42")).toEqual({
+            kind: "preview",
+            id: "preview-legacy-42",
+        });
+        expect(() => parseEnvironmentName(stableEnvKinds, "staging")).toThrow("Invalid canonical TypeID");
+        expect(() => parseEnvironmentName(stableEnvKinds, representativePreviewName.toUpperCase())).toThrow("Invalid canonical TypeID");
     });
 });
 //# sourceMappingURL=core.test.js.map
