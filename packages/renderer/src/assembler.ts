@@ -242,44 +242,6 @@ export function resolveManifestComponents(opts: {
   });
 }
 
-/**
- * Returns preview changed members and every transitive reverse-dependent.
- * Stable environments have no changed-member closure.
- */
-export function previewChangedClosure(
-  manifest: EnvironmentManifest,
-  graph: ComponentDependencyGraph,
-): Set<string> {
-  if (manifest.environment.kind !== "preview") {
-    return new Set();
-  }
-
-  const closure = new Set(
-    Object.entries(manifest.components)
-      .filter(([, entry]) => isPinned(entry))
-      .map(([name]) => name),
-  );
-  const dependents = new Map<string, string[]>();
-  for (const [consumer, dependencies] of Object.entries(graph)) {
-    for (const dependency of dependencies) {
-      const existing = dependents.get(dependency) ?? [];
-      existing.push(consumer);
-      dependents.set(dependency, existing);
-    }
-  }
-
-  const pending = [...closure];
-  for (let index = 0; index < pending.length; index += 1) {
-    for (const dependent of dependents.get(pending[index] ?? "") ?? []) {
-      if (!closure.has(dependent)) {
-        closure.add(dependent);
-        pending.push(dependent);
-      }
-    }
-  }
-  return closure;
-}
-
 /** Reads component dependency edges from installed package manifests. */
 export async function readComponentDependencyGraph(
   scratchDir: string,
@@ -309,40 +271,6 @@ export async function readComponentDependencyGraph(
   }
 
   return graph;
-}
-
-/** Returns dependency-first order or throws a cycle diagnostic. */
-export function topologicalOrder(
-  graph: ComponentDependencyGraph,
-  componentNames: readonly string[],
-): string[] {
-  const order: string[] = [];
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-
-  const visit = (name: string): void => {
-    if (visited.has(name)) {
-      return;
-    }
-
-    if (visiting.has(name)) {
-      throw new Error(`Component dependency cycle detected at "${name}"`);
-    }
-
-    visiting.add(name);
-    for (const dependency of graph[name] ?? []) {
-      visit(dependency);
-    }
-    visiting.delete(name);
-    visited.add(name);
-    order.push(name);
-  };
-
-  for (const name of componentNames) {
-    visit(name);
-  }
-
-  return order;
 }
 
 function resolvedComponentFromPinned(

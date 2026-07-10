@@ -10,7 +10,6 @@ export {
   assembleAndCheck,
   assembleWorkspace,
   checkWorkspaceTypes,
-  previewChangedClosure,
   type AssemblyResult,
   type ComponentDependencyGraph,
   type LocalOverrides,

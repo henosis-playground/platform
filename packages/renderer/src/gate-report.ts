@@ -1,11 +1,6 @@
-import type { ComponentDependencyGraph, ResolvedComponent } from "./assembler.js";
+import type { ComponentDependencyGraph } from "./assembler.js";
 import { formatEnvironment, type RuntimeEnv } from "@henosis/core";
-import type {
-  ExecutionComponent,
-  ExecutionResult,
-} from "./execute.js";
-import type { PipelineFailure } from "@henosis/core";
-import { formatOutputs } from "./render.js";
+import type { PipelineFailure, PipelineStage } from "@henosis/core";
 import type { SchemaData } from "./schema-data.js";
 
 /** Existing strict Rust-bot failure object; its JSON fields are unchanged. */
@@ -27,6 +22,9 @@ export type GateReport = {
   ok: boolean;
   failures: GateFailure[];
 };
+
+/** Precise stage retained in cells.json and diagnostic excerpts. */
+export type GateCellStage = PipelineStage | "compile" | "render";
 
 /** Extracts D20-compatible component failures from TypeScript diagnostics. */
 export function parseCompileFailures(
@@ -75,30 +73,26 @@ export function parseCompileFailures(
   ];
 }
 
-/** Converts one core failure to the first bot-compatible failure. */
-export function pipelineFailure(failure: PipelineFailure): GateFailure {
-  return pipelineFailures(failure)[0] ?? renderFailure(failure.message);
-}
-
 /** Converts all structured issues in a core failure without dropping evidence. */
 export function pipelineFailures(
   failure: PipelineFailure,
   environment?: RuntimeEnv,
 ): GateFailure[] {
-  const environmentName = environment === undefined
-    ? undefined
-    : formatEnvironment(environment);
   if (failure.issues !== undefined && failure.issues.length > 0) {
-    return failure.issues.map((issue) =>
-      contractFailure({
-        consumer: issue.component,
-        producer: "unknown",
-        kind: "validate",
-        message: prefixEnvironment(issue.message, environmentName),
-        excerpt: JSON.stringify(issue),
-        consumedPaths:
-          issue.record === undefined ? [] : [issue.record.path],
-      }),
+    return withFailureContext(
+      failure.issues.map((issue) =>
+        contractFailure({
+          consumer: issue.component,
+          producer: "unknown",
+          kind: "validate",
+          message: issue.message,
+          excerpt: JSON.stringify(issue),
+          consumedPaths:
+            issue.record === undefined ? [] : [issue.record.path],
+        }),
+      ),
+      environment,
+      failure.stage,
     );
   }
   const kind = failureKind(failure.stage);
@@ -106,22 +100,47 @@ export function pipelineFailures(
   const resolution = resolutionDetails(failure.message);
   const consumedRef = consumedRefDetails(failure.message);
   const outputPath = outputValidationPath(component, failure.message);
-  return [contractFailure({
-    consumer: component,
-    producer:
-      resolution?.producer ??
-      consumedRef?.producer ??
-      (kind === "validate" ? component : "unknown"),
-    kind,
-    message: prefixEnvironment(failure.message, environmentName),
-    excerpt: prefixEnvironment(failure.message, environmentName),
-    consumedPaths:
-      (resolution?.path ?? consumedRef?.path) === undefined
-        ? outputPath === undefined
-          ? []
-          : [outputPath]
-        : [resolution?.path ?? consumedRef?.path ?? ""],
-  })];
+  return withFailureContext(
+    [contractFailure({
+      consumer: component,
+      producer:
+        resolution?.producer ??
+        consumedRef?.producer ??
+        (kind === "validate" ? component : "unknown"),
+      kind,
+      message: failure.message,
+      excerpt: failure.message,
+      consumedPaths:
+        (resolution?.path ?? consumedRef?.path) === undefined
+          ? outputPath === undefined
+            ? []
+            : [outputPath]
+          : [resolution?.path ?? consumedRef?.path ?? ""],
+    })],
+    environment,
+    failure.stage,
+  );
+}
+
+/** Adds side-channel context without changing parser-sensitive messages. */
+export function withFailureContext(
+  failures: readonly GateFailure[],
+  environment: RuntimeEnv | undefined,
+  stage: GateCellStage,
+): GateFailure[] {
+  const environmentName = environment === undefined
+    ? undefined
+    : formatEnvironment(environment);
+  return failures.map((failure) => ({
+    ...failure,
+    excerpt: [
+      ...(environmentName === undefined
+        ? []
+        : [`Environment: ${environmentName}`]),
+      `Pipeline stage: ${stage}`,
+      failure.excerpt,
+    ].join("\n"),
+  }));
 }
 
 /** Creates a renderer-scoped bot-compatible failure. */
@@ -134,58 +153,6 @@ export function renderFailure(message: string, excerpt = message): GateFailure {
     excerpt,
     consumedPaths: [],
   });
-}
-
-/** Formats the retained single-environment human report helper. */
-export function formatGateText(opts: {
-  ok: boolean;
-  environment: RuntimeEnv;
-  components: readonly ResolvedComponent[];
-  execution?: ExecutionResult;
-  failures: readonly GateFailure[];
-  compileOutput?: string;
-}): string {
-  const lines = [
-    `Henosis gate: ${opts.ok ? "PASS" : "FAIL"}`,
-    `Environment: ${formatEnvironment(opts.environment)}`,
-    "Components:",
-    ...opts.components.map(formatComponentSummary),
-  ];
-
-  if (!opts.ok) {
-    for (const failure of opts.failures) {
-      lines.push("", `Contract violation: ${failure.message}`);
-    }
-
-    if (opts.compileOutput !== undefined && opts.compileOutput.trim().length > 0) {
-      lines.push("", "TypeScript errors:");
-      lines.push(
-        ...opts.compileOutput
-          .trim()
-          .split(/\r?\n/)
-          .map((line) => `  ${line}`),
-      );
-    } else {
-      lines.push(
-        ...opts.failures.flatMap((failure) => [
-          "",
-          `${failure.kind} error:`,
-          ...failure.excerpt.split(/\r?\n/).map((line) => `  ${line}`),
-        ]),
-      );
-    }
-
-    return `${lines.join("\n")}\n`;
-  }
-
-  lines.push("", "Resolved outputs:");
-  if (opts.execution === undefined) {
-    lines.push("  no resolved outputs available");
-  } else {
-    lines.push(...formatExecutionSummary(opts.execution));
-  }
-
-  return `${lines.join("\n")}\n`;
 }
 
 function contractFailure(opts: {
@@ -210,34 +177,6 @@ function contractFailure(opts: {
   };
 }
 
-function formatComponentSummary(component: ResolvedComponent): string {
-  const sha = component.ref.slice(0, 7);
-  const disposition =
-    component.entry.kind === "pinned"
-      ? "[PINNED]"
-      : `[FOLLOW ${component.entry.follow}]`;
-  return `  ${component.name}  ${disposition} sha:${sha}`;
-}
-
-function formatExecutionSummary(execution: ExecutionResult): string[] {
-  return Object.entries(execution.components).flatMap(([name, component]) => {
-    return [
-      `  ${name}: ${formatDisposition(component)} ${component.digest}`,
-      ...formatComponentOutputs(component).map((line) => `    ${line}`),
-      "",
-    ];
-  });
-}
-
-function formatDisposition(component: ExecutionComponent): string {
-  if (component.disposition.kind === "borrowed") {
-    return `borrowed from ${component.disposition.from}`;
-  }
-  return component.source.kind === "follower"
-    ? `materialized from ${component.source.follow} pin`
-    : "materialized pinned";
-}
-
 function failureKind(stage: PipelineFailure["stage"]): GateFailure["kind"] {
   if (stage === "resolution") return "resolve";
   if (
@@ -249,10 +188,6 @@ function failureKind(stage: PipelineFailure["stage"]): GateFailure["kind"] {
     return "validate";
   }
   return "render";
-}
-
-function prefixEnvironment(message: string, environment: string | undefined): string {
-  return environment === undefined ? message : `[${environment}] ${message}`;
 }
 
 function resolutionDetails(
@@ -285,10 +220,6 @@ function outputValidationPath(
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function formatComponentOutputs(component: ExecutionComponent): string[] {
-  return formatOutputs(component.outputs);
 }
 
 function parseErrorFilePath(line: string): string | undefined {

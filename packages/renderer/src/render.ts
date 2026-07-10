@@ -1,10 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import {
   mkdir,
+  lstat,
   mkdtemp,
+  readlink,
   readFile,
   rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -29,7 +32,12 @@ import {
   type ExecutionComponent,
   type ExecutionResult,
 } from "./execute.js";
-import { pipelineFailures, renderFailure, type GateReport } from "./gate-report.js";
+import {
+  pipelineFailures,
+  renderFailure,
+  withFailureContext,
+  type GateReport,
+} from "./gate-report.js";
 import { isPinned, parseManifest, type EnvironmentManifest } from "./manifest.js";
 
 /** Deterministic metadata written beside component artifact directories. */
@@ -152,7 +160,11 @@ async function renderGateReportError(
   const rawFailures =
     error instanceof ExecutionPipelineError
       ? pipelineFailures(error.failure, opts.manifest.environment)
-      : [renderFailure(errorMessage(error))];
+      : withFailureContext(
+          [renderFailure(errorMessage(error))],
+          opts.manifest.environment,
+          "render",
+        );
   const failures = await enrichGateFailures(rawFailures, {
     scratchDir: opts.scratchDir,
     components,
@@ -172,8 +184,10 @@ export async function writeRenderOutput(opts: {
   const outputDir = path.resolve(opts.outputDir);
   const parent = path.dirname(outputDir);
   await mkdir(parent, { recursive: true });
+  const versionsDir = path.join(parent, `.${path.basename(outputDir)}.versions`);
+  await mkdir(versionsDir, { recursive: true });
   const staging = await mkdtemp(
-    path.join(parent, `.${path.basename(outputDir)}-staging-`),
+    path.join(versionsDir, "world-"),
   );
   const components = Object.entries(opts.execution.components).sort(
     ([left], [right]) => compareCodeUnits(left, right),
@@ -217,8 +231,10 @@ export async function writeRenderOutput(opts: {
       `${JSON.stringify(manifest, null, 2)}\n`,
       { flag: "wx" },
     );
-    await rm(outputDir, { recursive: true, force: true });
-    await rename(staging, outputDir);
+    const previous = await atomicPublishDirectory(staging, outputDir);
+    if (previous !== undefined && isWithin(previous, versionsDir)) {
+      await rm(previous, { recursive: true, force: true }).catch(() => undefined);
+    }
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
@@ -235,6 +251,57 @@ export async function writeRenderOutput(opts: {
     artifactFiles,
     manifest,
   };
+}
+
+type RenamePath = (oldPath: string, newPath: string) => Promise<void>;
+
+/** Atomically switches a rendered-directory pointer, preserving the old world on failure. */
+export async function atomicPublishDirectory(
+  staging: string,
+  outputDir: string,
+  renamePath: RenamePath = rename,
+): Promise<string | undefined> {
+  const parent = path.dirname(outputDir);
+  const pointer = path.join(
+    parent,
+    `.${path.basename(outputDir)}.next-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  const relativeTarget = path.relative(parent, staging);
+  await symlink(relativeTarget, pointer, "dir");
+
+  let previous: string | undefined;
+  let legacyBackup: string | undefined;
+  try {
+    const existing = await lstat(outputDir).catch((error: unknown) => {
+      if (isErrno(error, "ENOENT")) return undefined;
+      throw error;
+    });
+    if (existing?.isSymbolicLink()) {
+      previous = path.resolve(parent, await readlink(outputDir));
+    } else if (existing?.isDirectory()) {
+      legacyBackup = path.join(
+        path.dirname(staging),
+        `legacy-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      );
+      await renamePath(outputDir, legacyBackup);
+      previous = legacyBackup;
+    } else if (existing !== undefined) {
+      throw new Error(`Render output path is not a directory: ${outputDir}`);
+    }
+
+    try {
+      await renamePath(pointer, outputDir);
+    } catch (error) {
+      if (legacyBackup !== undefined) {
+        await renamePath(legacyBackup, outputDir);
+      }
+      throw error;
+    }
+    return previous;
+  } catch (error) {
+    await rm(pointer, { force: true });
+    throw error;
+  }
 }
 
 /** Formats one execution component for deterministic render metadata. */
@@ -402,6 +469,15 @@ async function loadFollowerManifests(
 
 function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function isWithin(candidate: string, parent: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 function errorMessage(error: unknown): string {

@@ -24,6 +24,8 @@ import {
   parseCompileFailures,
   pipelineFailures,
   renderFailure,
+  withFailureContext,
+  type GateCellStage,
   type GateFailure,
   type GateReport,
 } from "./gate-report.js";
@@ -54,9 +56,15 @@ export interface GateCellReport {
   readonly environment: string;
   /** Whether the complete pipeline passed for this cell. */
   readonly ok: boolean;
-  /** Existing bot-compatible failures scoped to this environment. */
-  readonly failures: readonly GateFailure[];
+  /** Bot-compatible failures plus their precise pipeline stage. */
+  readonly failures: readonly GateCellFailure[];
 }
+
+/** One cells.json failure with stage retained outside the strict bot report. */
+export type GateCellFailure = GateFailure & {
+  /** Exact pipeline phase that produced this failure. */
+  readonly stage: GateCellStage;
+};
 
 /** Complete gate return value; `report` retains the strict Rust contract. */
 export interface GateRunResult {
@@ -118,12 +126,22 @@ export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
       })
     ).stableEnvKinds;
   } catch (error) {
-    const failure =
-      error instanceof ExecutionPipelineError
-        ? pipelineFailures(error.failure, manifest.environment)
-        : [renderFailure(errorMessage(error))];
+    const stage = error instanceof ExecutionPipelineError
+      ? error.failure.stage
+      : "render";
+    const failure = error instanceof ExecutionPipelineError
+      ? pipelineFailures(error.failure, manifest.environment)
+      : withFailureContext(
+          [renderFailure(errorMessage(error))],
+          manifest.environment,
+          stage,
+        );
     return failedCellsResult(
-      [{ environment: environmentName(manifest.environment), ok: false, failures: failure }],
+      [{
+        environment: environmentName(manifest.environment),
+        ok: false,
+        failures: cellFailures(failure, stage),
+      }],
     );
   }
   if (!stableKinds.includes("dev")) {
@@ -131,7 +149,14 @@ export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
       {
         environment: "dev",
         ok: false,
-        failures: [renderFailure('The merge gate requires a stable "dev" environment')],
+        failures: cellFailures(
+          withFailureContext(
+            [renderFailure('The merge gate requires a stable "dev" environment')],
+            { kind: "dev" },
+            "environment-validation",
+          ),
+          "environment-validation",
+        ),
       },
     ]);
   }
@@ -164,10 +189,17 @@ export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
       });
       cells.push(successCell(environment, execution));
     } catch (error) {
+      const stage = error instanceof ExecutionPipelineError
+        ? error.failure.stage
+        : "render";
       const rawFailures =
         error instanceof ExecutionPipelineError
           ? pipelineFailures(error.failure, environment)
-          : [renderFailure(`[${environmentName(environment)}] ${errorMessage(error)}`)];
+          : withFailureContext(
+              [renderFailure(errorMessage(error))],
+              environment,
+              stage,
+            );
       const failures = await enrichGateFailures(rawFailures, {
         scratchDir: opts.scratchDir,
         components,
@@ -177,7 +209,7 @@ export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
       cells.push({
         environment: environmentName(environment),
         ok: false,
-        failures,
+        failures: cellFailures(failures, stage),
       });
     }
   }
@@ -201,7 +233,11 @@ async function compileFailureResult(
     // Installation may have failed before package manifests existed.
   }
   const failures = await enrichGateFailures(
-    parseCompileFailures(compileOutput, graph),
+    withFailureContext(
+      parseCompileFailures(compileOutput, graph),
+      manifest.environment,
+      "compile",
+    ),
     {
       scratchDir: opts.scratchDir,
       components,
@@ -212,9 +248,17 @@ async function compileFailureResult(
   const environment = environmentName(manifest.environment);
   return {
     report: { ok: false, failures },
-    cells: [{ environment, ok: false, failures }],
+    cells: [{
+      environment,
+      ok: false,
+      failures: cellFailures(failures, "compile"),
+    }],
     text: formatMatrixText(
-      [{ environment, ok: false, failures }],
+      [{
+        environment,
+        ok: false,
+        failures: cellFailures(failures, "compile"),
+      }],
       compileOutput,
     ),
   };
@@ -237,13 +281,25 @@ function failedCellsResult(cells: readonly GateCellReport[]): GateRunResult {
 }
 
 function resultFromCells(cells: readonly GateCellReport[]): GateRunResult {
-  const failures = cells.flatMap((cell) => cell.failures);
+  const failures = cells.flatMap((cell) =>
+    cell.failures.map(({ stage, ...failure }) => {
+      void stage;
+      return failure;
+    })
+  );
   const report: GateReport = { ok: failures.length === 0, failures };
   return {
     report,
     cells,
     text: formatMatrixText(cells),
   };
+}
+
+function cellFailures(
+  failures: readonly GateFailure[],
+  stage: GateCellStage,
+): GateCellFailure[] {
+  return failures.map((failure) => ({ ...failure, stage }));
 }
 
 function inferChangedComponents(

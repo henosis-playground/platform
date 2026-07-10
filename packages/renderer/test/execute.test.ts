@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { pipelineFailures } from "../src/gate-report.js";
 import { ExecutionPipelineError, executeComponents } from "../src/execute.js";
 import { parseManifest } from "../src/manifest.js";
-import { writeRenderOutput } from "../src/render.js";
+import {
+  atomicPublishDirectory,
+  writeRenderOutput,
+} from "../src/render.js";
 
 const scratchDirs: string[] = [];
 
@@ -19,7 +22,7 @@ afterEach(async () => {
 });
 
 describe("worker execution and render publication", () => {
-  it("honors targeted borrowing only outside the changed reverse closure", async () => {
+  it("honors targeted borrowing and emits subscriptions for differing targets", async () => {
     const scratchDir = await makeScratchWorkspace();
     await writeTestPlatform(scratchDir);
     await writeComponent(
@@ -43,6 +46,12 @@ describe("worker execution and render publication", () => {
       { "@henosis/test-platform": "*" },
       componentSource("service-c", undefined),
     );
+    await writeComponent(
+      scratchDir,
+      "service-d",
+      { "@henosis/test-platform": "*" },
+      componentSource("service-d", undefined, "dev"),
+    );
 
     const preview = parseManifest(`
       [environment]
@@ -57,6 +66,9 @@ describe("worker execution and render publication", () => {
       follow = "dev"
 
       [components.service-c]
+      follow = "dev"
+
+      [components.service-d]
       follow = "dev"
     `);
     const dev = parseManifest(`
@@ -77,6 +89,11 @@ describe("worker execution and render publication", () => {
       repo = "henosis-playground/service-c"
       ref = "service-c-dev"
       digest = "sha256:service-c-dev"
+
+      [components.service-d]
+      repo = "henosis-playground/service-d"
+      ref = "service-d-dev"
+      digest = "sha256:service-d-dev"
     `);
 
     const result = await executeComponents({
@@ -119,21 +136,76 @@ describe("worker execution and render publication", () => {
       records: [],
       artifacts: [],
     });
+    expect(result.components["service-d"]).toMatchObject({
+      effectiveEnv: { kind: "dev" },
+      disposition: {
+        kind: "borrowed",
+        from: "dev",
+        effectiveEnv: { kind: "dev" },
+      },
+      outputs: { endpoint: "https://service-d-dev.example" },
+      records: [],
+      artifacts: [],
+    });
     expect(result.subscriptions).toEqual(["dev", "prod"]);
+
+    const borrowedOnly = await executeComponents({
+      manifest: dev,
+      devManifest: dev,
+      scratchDir,
+      platformRoot: platformRepoRoot(),
+      requestedEnv: { kind: "preview", id: "preview-borrow-test" },
+      changedComponents: ["service-a"],
+    });
+    expect(borrowedOnly.components["service-c"]?.disposition).toMatchObject({
+      kind: "borrowed",
+      from: "prod",
+    });
+    expect(borrowedOnly.components["service-d"]?.disposition).toMatchObject({
+      kind: "borrowed",
+      from: "dev",
+    });
+    expect(borrowedOnly.subscriptions).toEqual(["dev", "prod"]);
 
     const outputDir = await mkdtemp(path.join(os.tmpdir(), "henosis-output-parent-"));
     scratchDirs.push(outputDir);
     const finalDir = path.join(outputDir, "rendered");
-    const output = await writeRenderOutput({ execution: result, outputDir: finalDir });
+    const output = await writeRenderOutput({
+      execution: borrowedOnly,
+      outputDir: finalDir,
+    });
     expect(output.artifactFiles["service-c"]).toEqual([]);
     expect(output.artifactFiles["service-a"]).toHaveLength(1);
-    expect(
-      await readFile(output.artifactFiles["service-b"]?.[0] ?? "", "utf8"),
-    ).toContain("https://service-a-preview-borrow-test.example");
+    expect(output.artifactFiles["service-c"]).toEqual([]);
+    expect(output.artifactFiles["service-d"]).toEqual([]);
     const metadata = JSON.parse(await readFile(output.manifestPath, "utf8"));
     expect(metadata).not.toHaveProperty("generatedAt");
     expect(metadata.subscriptions).toEqual(["dev", "prod"]);
     expect(metadata.components["service-c"].artifactPaths).toEqual([]);
+    expect(metadata.components["service-d"].artifactPaths).toEqual([]);
+  });
+
+  it("keeps the previous rendered world when the atomic pointer switch fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "henosis-publish-"));
+    scratchDirs.push(root);
+    const versions = path.join(root, ".rendered.versions");
+    await mkdir(versions, { recursive: true });
+    const outputDir = path.join(root, "rendered");
+    const first = await mkdtemp(path.join(versions, "world-"));
+    await writeFile(path.join(first, "marker.txt"), "previous\n");
+    await atomicPublishDirectory(first, outputDir);
+
+    const replacement = await mkdtemp(path.join(versions, "world-"));
+    await writeFile(path.join(replacement, "marker.txt"), "replacement\n");
+    await expect(
+      atomicPublishDirectory(replacement, outputDir, async () => {
+        throw new Error("injected pointer rename failure");
+      }),
+    ).rejects.toThrow("injected pointer rename failure");
+
+    expect(await readFile(path.join(outputDir, "marker.txt"), "utf8")).toBe(
+      "previous\n",
+    );
   });
 
   it("preserves structured validator issues verbatim worker to gate failure", async () => {
@@ -179,7 +251,10 @@ describe("worker execution and render publication", () => {
       },
     ]);
     const [reported] = pipelineFailures(failure!, { kind: "prod" });
-    expect(JSON.parse(reported?.excerpt ?? "")).toEqual(failure?.issues?.[0]);
+    expect(reported?.message).toBe("prod is forbidden by this test policy");
+    expect(reported?.excerpt).toContain("Environment: prod");
+    expect(reported?.excerpt).toContain("Pipeline stage: world-validation");
+    expect(reported?.excerpt).toContain(JSON.stringify(failure?.issues?.[0]));
     expect(reported?.consumedPaths).toEqual(["/environment"]);
   });
 });
@@ -301,7 +376,11 @@ async function writeComponent(
   await writeFile(path.join(packageDir, "src", "index.ts"), source);
 }
 
-function componentSource(name: string, dependency: string | undefined): string {
+function componentSource(
+  name: string,
+  dependency: string | undefined,
+  borrowTarget: "dev" | "prod" = "prod",
+): string {
   const dependencyImport = dependency === undefined
     ? ""
     : `import dependency from "@henosis/${dependency}";`;
@@ -314,7 +393,7 @@ function componentSource(name: string, dependency: string | undefined): string {
     ${dependencyImport}
     export default defineComponent({
       outputs: h.object({ endpoint: h.url() }),
-      borrowForPreview: "prod",
+      borrowForPreview: "${borrowTarget}",
       params: {
         dev: { suffix: "dev" },
         prod: { suffix: "prod" },

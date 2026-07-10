@@ -17,7 +17,7 @@
     "build": "tsc -p tsconfig.json",
     "render": "node dist/render.js",
     "gate": "node dist/gate.js",
-    "test": "vitest run"
+    "test": "vitest run && tsc -p tsconfig.typecheck.json"
   },
   "dependencies": {
     "@henosis/core": "workspace:^",
