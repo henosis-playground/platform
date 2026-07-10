@@ -97,7 +97,7 @@ printf '%s\n' "$sha" > "$build_staging/.henosis-platform-sha"
 (
   cd "$build_staging"
   corepack "pnpm@$REQUIRED_PNPM_VERSION" install --frozen-lockfile
-  corepack "pnpm@$REQUIRED_PNPM_VERSION" build
+  corepack "pnpm@$REQUIRED_PNPM_VERSION" -r build
 )
 
 cat > "$build_staging/henosis-runner" <<'EOF'
