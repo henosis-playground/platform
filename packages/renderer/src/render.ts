@@ -22,6 +22,7 @@ import {
 import {
   assembleWorkspace,
   checkWorkspaceTypes,
+  readComponentDependencyGraph,
   resolveManifestComponents,
   type LocalOverrides,
 } from "./assembler.js";
@@ -34,6 +35,7 @@ import {
 } from "./execute.js";
 import {
   pipelineFailures,
+  parseCompileFailures,
   renderFailure,
   withFailureContext,
   type GateReport,
@@ -116,11 +118,17 @@ export async function renderManifest(opts: {
     localOverrides: opts.localOverrides,
   });
   if (!assembly.ok) {
-    throw new Error(assembly.compileOutput ?? "Workspace assembly failed");
+    throw await renderCompileGateReport(
+      assembly.compileOutput ?? "Workspace assembly failed",
+      opts,
+    );
   }
   const typeCheck = await checkWorkspaceTypes({ scratchDir: opts.scratchDir });
   if (!typeCheck.ok) {
-    throw new Error(typeCheck.compileOutput ?? "Workspace typecheck failed");
+    throw await renderCompileGateReport(
+      typeCheck.compileOutput ?? "Workspace typecheck failed",
+      opts,
+    );
   }
 
   let execution: ExecutionResult;
@@ -137,6 +145,56 @@ export async function renderManifest(opts: {
     throw await renderGateReportError(error, opts);
   }
   return writeRenderOutput({ execution, outputDir: opts.outputDir });
+}
+
+async function renderCompileGateReport(
+  compileOutput: string,
+  opts: {
+    manifest: EnvironmentManifest;
+    devManifest: EnvironmentManifest;
+    stableManifests?: Readonly<Record<string, EnvironmentManifest>>;
+    scratchDir: string;
+    platformRef: string;
+    localOverrides?: LocalOverrides;
+  },
+): Promise<RenderGateReportError> {
+  let components: ReturnType<typeof resolveManifestComponents> = [];
+  try {
+    components = resolveManifestComponents({
+      manifest: opts.manifest,
+      stableManifests: {
+        dev: opts.devManifest,
+        ...(opts.stableManifests ?? {}),
+      },
+    });
+  } catch {
+    // Resolution itself can be the assembly failure; retain a structured generic report.
+  }
+  const componentNames = components.length > 0
+    ? components.map((component) => component.name)
+    : Object.keys(opts.manifest.components);
+  let graph = Object.fromEntries(
+    componentNames.map((component) => [component, [] as string[]]),
+  );
+  try {
+    graph = await readComponentDependencyGraph(opts.scratchDir, componentNames);
+  } catch {
+    // Installation failures can precede creation of package manifests.
+  }
+  const failures = await enrichGateFailures(
+    withFailureContext(
+      parseCompileFailures(compileOutput, graph),
+      opts.manifest.environment,
+      "compile",
+    ),
+    {
+      scratchDir: opts.scratchDir,
+      components,
+      platformRef: opts.platformRef,
+      localOverrides: opts.localOverrides ?? {},
+    },
+  );
+  return new RenderGateReportError({ ok: false, failures });
 }
 
 async function renderGateReportError(
@@ -494,12 +552,10 @@ function errorMessage(error: unknown): string {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    if (
-      error instanceof RenderGateReportError &&
-      process.env.GITHUB_ACTIONS === "true"
-    ) {
+    if (error instanceof RenderGateReportError) {
+      const annotation = process.env.GITHUB_ACTIONS === "true" ? "##[error]" : "";
       console.error(
-        `##[error]${STRUCTURED_RENDER_FAILURE_PREFIX}${JSON.stringify(error.report)}`,
+        `${annotation}${STRUCTURED_RENDER_FAILURE_PREFIX}${JSON.stringify(error.report)}`,
       );
     } else {
       console.error(errorMessage(error));

@@ -36,9 +36,8 @@ export function parseCompileFailures(
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
-    const fieldMatch = /Property '([^']+)' (?:does not exist on type|is missing in type)/.exec(
-      line,
-    );
+    const fieldMatch =
+      /(?:(?:Property|and) )?'([^']+)' (?:does not exist (?:on|in) type|is missing in type)/.exec(line);
     if (fieldMatch === null) {
       continue;
     }
@@ -49,16 +48,21 @@ export function parseCompileFailures(
     const component = filePath === undefined ? undefined : componentFromPath(filePath);
     const consumer = component ?? firstConsumerWithDependency(graph) ?? "unknown";
     const producer = firstProducerForConsumer(graph, consumer) ?? "unknown";
-    const message = line.includes(" is missing in type")
-      ? `${consumer} is missing required field ${field}`
-      : `${consumer} consumes ${producer}.${field} which no longer exists`;
+    const excessProperty = line.includes(
+      "Object literal may only specify known properties",
+    );
+    const message = excessProperty && line.includes("type 'Resources'")
+      ? `${consumer} uses unsupported Resources field ${field}; Resources is { requests?, limits? }`
+      : line.includes(" is missing in type")
+        ? `${consumer} is missing required field ${field}`
+        : `${consumer} consumes ${producer}.${field} which no longer exists`;
     failures.push(contractFailure({
       consumer,
-      producer,
+      producer: excessProperty ? "unknown" : producer,
       kind: "compile",
       message,
-      excerpt: excerptFrom(lines, index),
-      consumedPaths: [field],
+      excerpt: normalizeCompileExcerpt(excerptFrom(lines, index), consumer),
+      consumedPaths: excessProperty ? [] : [field],
     }));
   }
 
@@ -298,7 +302,24 @@ function componentFromPath(filePath: string): string | undefined {
   }
 
   const packageMatch = /\/@henosis\/([^/]+)\/src\//.exec(normalized);
-  return packageMatch?.[1];
+  if (packageMatch !== null) {
+    return packageMatch[1];
+  }
+
+  const archiveMatch = /[+/]([^+/]+)\/src\/[^/]+\.tsx?$/.exec(normalized);
+  return archiveMatch?.[1];
+}
+
+function normalizeCompileExcerpt(excerpt: string, consumer: string): string {
+  return excerpt
+    .split(/\r?\n/)
+    .map((line) => {
+      const filePath = parseErrorFilePath(line);
+      return filePath === undefined
+        ? line
+        : line.replace(filePath, `${consumer}/henosis/src/index.ts`);
+    })
+    .join("\n");
 }
 
 function firstConsumerWithDependency(

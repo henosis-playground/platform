@@ -28,7 +28,7 @@ describe("parseCompileFailures", () => {
         kind: "compile",
         message: "service-b consumes service-a.api which no longer exists",
         excerpt:
-          "../../node_modules/@henosis/service-b/src/index.ts(10,33): error TS2339: Property 'api' does not exist on type '{ readonly newApiName: Ref<string>; }'.",
+          "service-b/henosis/src/index.ts(10,33): error TS2339: Property 'api' does not exist on type '{ readonly newApiName: Ref<string>; }'.",
       },
     ]);
   });
@@ -65,6 +65,20 @@ describe("parseCompileFailures", () => {
       kind: "compile",
       message: "service-a is missing required field resources",
       consumedPaths: ["resources"],
+    });
+  });
+
+  it("normalizes excess-property locations and explains the Resources repair", () => {
+    const output = "../../node_modules/.pnpm/github.com+henosis-playground+service-a/src/index.ts(29,9): error TS2353: Object literal may only specify known properties, and 'cpu' does not exist in type 'Resources'.";
+
+    expect(parseCompileFailures(output, { "service-a": [] })[0]).toMatchObject({
+      consumer: "service-a",
+      producer: "unknown",
+      message:
+        "service-a uses unsupported Resources field cpu; Resources is { requests?, limits? }",
+      excerpt:
+        "service-a/henosis/src/index.ts(29,9): error TS2353: Object literal may only specify known properties, and 'cpu' does not exist in type 'Resources'.",
+      consumedPaths: [],
     });
   });
 
