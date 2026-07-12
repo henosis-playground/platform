@@ -1,7 +1,15 @@
-import { defineComponent, h } from "../src/index.js";
+import {
+  defineComponent,
+  h,
+  type OutputRole,
+  type UrlSchemaOptions,
+} from "../src/index.js";
+
+const uiRole: OutputRole = "ui";
+const uiUrl: UrlSchemaOptions = { role: uiRole };
 
 defineComponent({
-  outputs: h.object({ api: h.url() }),
+  outputs: h.object({ api: h.url(uiUrl) }),
   build: (ctx) => {
     // @ts-expect-error resources are required and have no platform default.
     const service = ctx.namespace("payments").service("api", {

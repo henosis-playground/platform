@@ -19,8 +19,11 @@ export const h = Object.freeze({
     string() {
         return leafSchema("string");
     },
-    url() {
-        return leafSchema("url");
+    url(options) {
+        if (options !== undefined && options.role !== "ui") {
+            throw new Error(`Invalid Henosis output role: ${String(options.role)}`);
+        }
+        return leafSchema("url", options?.role);
     },
     number() {
         return leafSchema("number");
@@ -859,8 +862,16 @@ function makeRef(source, path) {
         [refSymbol]: Object.freeze({ source, path: Object.freeze([...path]) }),
     });
 }
-function leafSchema(kind) {
-    return Object.freeze({ kind, [schemaSymbol]: { kind } });
+function leafSchema(kind, role) {
+    const data = Object.freeze({
+        kind,
+        ...(role === undefined ? {} : { role }),
+    });
+    return Object.freeze({
+        kind,
+        ...(role === undefined ? {} : { role }),
+        [schemaSymbol]: data,
+    });
 }
 function validateAgainstSchema(schema, value, path, allowRefs) {
     if (allowRefs && isRef(value))

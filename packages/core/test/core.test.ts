@@ -21,9 +21,11 @@ import {
   type Environment,
   type ImportedComponent,
   type ObjectSchema,
+  type OutputRole,
   type RecordSink,
   type Ref,
   type SchemaShape,
+  type UrlSchemaOptions,
   type WorldPlan,
 } from "../src/index.js";
 
@@ -94,6 +96,24 @@ describe("component definition and exact params", () => {
     expect(isRef(component.api)).toBe(true);
     expect(refSourceDefinition(component.api)).toBe(getComponentDefinition(component));
     expect(refOutputPath(component.nested.label)).toEqual(["nested", "label"]);
+  });
+
+  it("keeps UI role metadata on the named output schema", () => {
+    const role: OutputRole = "ui";
+    const options: UrlSchemaOptions = { role };
+    const component = platform.defineComponent({
+      outputs: h.object({ app: h.url(options), api: h.url() }),
+      build: () => ({
+        app: "https://service.example/app",
+        api: "https://service.example/api",
+      }),
+    });
+
+    const outputs = getComponentDefinition(component).outputs;
+    expect(outputs.shape.app).toMatchObject({ kind: "url", role: "ui" });
+    expect(outputs.shape.api).toEqual(
+      expect.not.objectContaining({ role: expect.anything() }),
+    );
   });
 
   it("widens inferred rows while selecting exactly one environment row", () => {

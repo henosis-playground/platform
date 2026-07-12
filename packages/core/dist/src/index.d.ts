@@ -205,8 +205,17 @@ export interface PlatformSpec<Kinds extends readonly [string, ...string[]], Cont
     /** Platform-intrinsic checks only; organization policy is renderer input. */
     readonly validators?: readonly WorldValidator<Kinds[number]>[];
 }
+/** Semantic role attached to a published component output. */
+export type OutputRole = "ui";
+/** Metadata accepted when defining a URL output schema. */
+export interface UrlSchemaOptions {
+    /** Marks the URL as a user-facing UI entrypoint. */
+    readonly role: OutputRole;
+}
 /** A runtime output schema carrying its inferred TypeScript value. */
 export interface Schema<T> {
+    /** Optional semantic role for downstream output discovery. */
+    readonly role?: OutputRole;
     readonly [schemaTypeBrand]?: T;
     readonly [schemaSymbol]: SchemaData;
 }
@@ -328,8 +337,8 @@ export interface SchemaBuilder {
     object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
     /** Defines a string schema. */
     string(): StringSchema;
-    /** Defines an HTTP/HTTPS URL schema. */
-    url(): UrlSchema;
+    /** Defines an HTTP/HTTPS URL schema with optional output metadata. */
+    url(options?: UrlSchemaOptions): UrlSchema;
     /** Defines a finite number schema. */
     number(): NumberSchema;
 }
@@ -479,6 +488,7 @@ interface PlatformDescriptor {
 }
 interface SchemaData {
     readonly kind: "string" | "url" | "number" | "object";
+    readonly role?: OutputRole;
     readonly shape?: SchemaShape;
 }
 interface OutputRefData {

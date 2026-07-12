@@ -1,4 +1,4 @@
-import type { Schema } from "@henosis/core";
+import type { OutputRole, Schema } from "@henosis/core";
 
 /** Stable JSON representation of an introspectable output schema. */
 export type SchemaData =
@@ -8,6 +8,7 @@ export type SchemaData =
     }
   | {
       readonly kind: string;
+      readonly role?: OutputRole;
     };
 
 /** Converts a runtime schema to code-unit-sorted diagnostic data. */
@@ -19,7 +20,8 @@ export function schemaDataFromSchema(schema: Schema<unknown>): SchemaData {
 
   const kind = raw.kind;
   if (kind !== "object") {
-    return { kind };
+    const role = outputRole(raw.role);
+    return role === undefined ? { kind } : { kind, role };
   }
 
   const shape = raw.shape;
@@ -35,6 +37,12 @@ export function schemaDataFromSchema(schema: Schema<unknown>): SchemaData {
         .map(([key, child]) => [key, schemaDataFromSchema(child as Schema<unknown>)]),
     ),
   };
+}
+
+function outputRole(value: unknown): OutputRole | undefined {
+  if (value === undefined) return undefined;
+  if (value === "ui") return value;
+  throw new Error(`Invalid Henosis output role: ${String(value)}`);
 }
 
 /** Serializes arbitrary diagnostic JSON with recursively stable key order. */
