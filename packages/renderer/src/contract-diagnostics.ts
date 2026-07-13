@@ -627,9 +627,13 @@ function isSchemaData(value: unknown): value is SchemaData {
     return false;
   }
   if (value.kind === "object") {
-    return isRecord(value.shape) && Object.values(value.shape).every(isSchemaData);
+    return (
+      value.role === undefined &&
+      isRecord(value.shape) &&
+      Object.values(value.shape).every(isSchemaData)
+    );
   }
-  return true;
+  return value.role === undefined || value.role === "ui";
 }
 
 function isObjectSchemaData(

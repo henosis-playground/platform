@@ -17,6 +17,6 @@ export declare const envName: (env: CoreEnvironment<"dev" | "staging" | "prod">)
 export declare const parseEnvironment: (name: string) => CoreEnvironment<"dev" | "staging" | "prod">;
 /** Constructors for Henosis output schemas. */
 export { h };
-export type { BuildValue, ComponentArtifact, ComponentDefinition, ComponentModule, ComponentSpecWithParams, ComponentSpecWithoutParams, ContextOutcome, DeferredJsonValue, EvaluationAbortStage, ExactParams, ImageRef, InferSchema, JsonValue, NumberSchema, ObjectSchema, ParamsByEnvironment, ParamsTable, PendingComponentRecord, RecordSink, Ref, RefObject, ReportedValidationIssue, ResolvedComponentRecord, Schema, SchemaBuilder, SchemaShape, StringSchema, UrlSchema, ValidationIssue, WorldValidator, } from "@henosis/core";
+export type { BuildValue, ComponentArtifact, ComponentDefinition, ComponentModule, ComponentSpecWithParams, ComponentSpecWithoutParams, ContextOutcome, DeferredJsonValue, EvaluationAbortStage, ExactParams, ImageRef, InferSchema, JsonValue, NumberSchema, ObjectSchema, OutputRole, ParamsByEnvironment, ParamsTable, PendingComponentRecord, RecordSink, Ref, RefObject, ReportedValidationIssue, ResolvedComponentRecord, Schema, SchemaBuilder, SchemaShape, StringSchema, UrlSchema, UrlSchemaOptions, ValidationIssue, WorldValidator, } from "@henosis/core";
 export type { PlatformMockDefineComponent, V1CompatibilityComponentSpec, } from "./v1-compat.js";
 //# sourceMappingURL=index.d.ts.map

@@ -61,6 +61,7 @@ export type {
   JsonValue,
   NumberSchema,
   ObjectSchema,
+  OutputRole,
   ParamsByEnvironment,
   ParamsTable,
   PendingComponentRecord,
@@ -74,6 +75,7 @@ export type {
   SchemaShape,
   StringSchema,
   UrlSchema,
+  UrlSchemaOptions,
   ValidationIssue,
   WorldValidator,
 } from "@henosis/core";

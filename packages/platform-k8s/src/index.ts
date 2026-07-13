@@ -217,6 +217,8 @@ export type {
   NumberSchema,
   /** Object output schema. */
   ObjectSchema,
+  /** Semantic role attached to a published output. */
+  OutputRole,
   /** Typed symbolic component output reference. */
   Ref,
   /** Public output-ref object derived from a schema. */
@@ -231,6 +233,8 @@ export type {
   StringSchema,
   /** URL output schema. */
   UrlSchema,
+  /** Metadata accepted when defining a URL output schema. */
+  UrlSchemaOptions,
 } from "@henosis/core";
 
 function createContext(

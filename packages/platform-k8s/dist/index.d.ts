@@ -114,6 +114,8 @@ InferSchema,
 NumberSchema, 
 /** Object output schema. */
 ObjectSchema, 
+/** Semantic role attached to a published output. */
+OutputRole,
 /** Typed symbolic component output reference. */
 Ref, 
 /** Public output-ref object derived from a schema. */
@@ -127,5 +129,7 @@ SchemaShape,
 /** String output schema. */
 StringSchema, 
 /** URL output schema. */
-UrlSchema, } from "@henosis/core";
+UrlSchema,
+/** Metadata accepted when defining a URL output schema. */
+UrlSchemaOptions, } from "@henosis/core";
 //# sourceMappingURL=index.d.ts.map

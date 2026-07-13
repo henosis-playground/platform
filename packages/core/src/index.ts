@@ -254,8 +254,19 @@ export interface PlatformSpec<
   readonly validators?: readonly WorldValidator<Kinds[number]>[];
 }
 
+/** Semantic role attached to a published component output. */
+export type OutputRole = "ui";
+
+/** Metadata accepted when defining a URL output schema. */
+export interface UrlSchemaOptions {
+  /** Marks the URL as a user-facing UI entrypoint. */
+  readonly role: OutputRole;
+}
+
 /** A runtime output schema carrying its inferred TypeScript value. */
 export interface Schema<T> {
+  /** Optional semantic role for downstream output discovery. */
+  readonly role?: OutputRole;
   readonly [schemaTypeBrand]?: T;
   readonly [schemaSymbol]: SchemaData;
 }
@@ -429,8 +440,8 @@ export interface SchemaBuilder {
   object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
   /** Defines a string schema. */
   string(): StringSchema;
-  /** Defines an HTTP/HTTPS URL schema. */
-  url(): UrlSchema;
+  /** Defines an HTTP/HTTPS URL schema with optional output metadata. */
+  url(options?: UrlSchemaOptions): UrlSchema;
   /** Defines a finite number schema. */
   number(): NumberSchema;
 }
@@ -447,8 +458,11 @@ export const h: SchemaBuilder = Object.freeze({
   string(): StringSchema {
     return leafSchema("string") as StringSchema;
   },
-  url(): UrlSchema {
-    return leafSchema("url") as UrlSchema;
+  url(options?: UrlSchemaOptions): UrlSchema {
+    if (options !== undefined && options.role !== "ui") {
+      throw new Error(`Invalid Henosis output role: ${String(options.role)}`);
+    }
+    return leafSchema("url", options?.role) as UrlSchema;
   },
   number(): NumberSchema {
     return leafSchema("number") as NumberSchema;
@@ -645,6 +659,7 @@ interface EvaluatedComponent<StableKind extends string> {
 
 interface SchemaData {
   readonly kind: "string" | "url" | "number" | "object";
+  readonly role?: OutputRole;
   readonly shape?: SchemaShape;
 }
 
@@ -1793,8 +1808,19 @@ function makeRef(
   }) as Ref<unknown>;
 }
 
-function leafSchema(kind: "string" | "url" | "number"): Schema<unknown> {
-  return Object.freeze({ kind, [schemaSymbol]: { kind } });
+function leafSchema(
+  kind: "string" | "url" | "number",
+  role?: OutputRole,
+): Schema<unknown> {
+  const data: SchemaData = Object.freeze({
+    kind,
+    ...(role === undefined ? {} : { role }),
+  });
+  return Object.freeze({
+    kind,
+    ...(role === undefined ? {} : { role }),
+    [schemaSymbol]: data,
+  });
 }
 
 function validateAgainstSchema(

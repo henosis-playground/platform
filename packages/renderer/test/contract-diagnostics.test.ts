@@ -51,9 +51,11 @@ importers:
           outputs: h.object({
             port: h.number(),
             api: h.url(),
+            app: h.url({ role: "ui" }),
           }),
           build: () => ({
             api: "https://service-a.henosis.example",
+            app: "https://service-a.henosis.example/app",
             port: 5432,
           }),
         });
@@ -63,6 +65,7 @@ importers:
     await expect(extractInstalledOutputSchema(scratchDir, "service-a")).resolves.toEqual({
       kind: "object",
       shape: {
+        app: { kind: "url", role: "ui" },
         api: { kind: "url" },
         port: { kind: "number" },
       },
