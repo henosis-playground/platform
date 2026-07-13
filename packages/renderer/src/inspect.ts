@@ -223,7 +223,7 @@ function borrowTarget(source: string): string | undefined {
 
 async function deployedDevRefs(): Promise<Record<string, string>> {
   const response = await fetch(
-    "https://raw.githubusercontent.com/henosis-playground/deploy/main/dev.toml",
+    "https://raw.githubusercontent.com/henosis-playground/deploy/main/worlds/dev.toml",
   );
   if (!response.ok) {
     throw new Error(`Cannot read deployed dev manifest: HTTP ${response.status}`);
