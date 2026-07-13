@@ -30,6 +30,7 @@ import {
   type GateReport,
 } from "./gate-report.js";
 import { isPinned, parseManifest, type EnvironmentManifest } from "./manifest.js";
+import { inspectNativeComponentSpecs } from "./inspect.js";
 import { currentPlatformRef, defaultPlatformRoot } from "./render.js";
 
 /** Renderer/gate-runner options for one candidate cohort. */
@@ -76,8 +77,113 @@ export interface GateRunResult {
   readonly text: string;
 }
 
-/** Runs tsc once, then the complete pipeline in every enabled blocking cell. */
+/** Runs component-aware blocking checks for one candidate cohort. */
 export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
+  const manifest = parseManifest(await readFile(opts.manifestPath, "utf8"));
+  const devManifest = parseManifest(await readFile(opts.devManifestPath, "utf8"));
+  const stableManifests = await loadFollowerManifests(
+    manifest,
+    path.dirname(opts.manifestPath),
+    devManifest,
+  );
+  const components = resolveManifestComponents({ manifest, stableManifests });
+  const coordinationDir = path.join(opts.outputDir, ".component-aware-gate");
+  await mkdir(coordinationDir, { recursive: true });
+  const classificationManifest = path.join(coordinationDir, "classification.toml");
+  await writeFile(
+    classificationManifest,
+    pinnedManifestToml(manifest.environment, components),
+  );
+
+  let nativeNames: readonly string[];
+  try {
+    const inspection = await inspectNativeComponentSpecs(
+      classificationManifest,
+      path.join(coordinationDir, "classification"),
+      opts.localOverrides,
+    );
+    nativeNames = Object.keys(inspection.components).sort(compareCodeUnits);
+  } catch (error) {
+    return nativeFailureResult(manifest.environment, error);
+  }
+  if (nativeNames.length === 0) return runKubernetesGate(opts);
+
+  const nativeSet = new Set(nativeNames);
+  const kubernetesNames = components
+    .map((component) => component.name)
+    .filter((name) => !nativeSet.has(name));
+  let kubernetesResult: GateRunResult | undefined;
+  if (kubernetesNames.length > 0) {
+    const kubernetesDir = path.join(coordinationDir, "kubernetes");
+    await mkdir(kubernetesDir, { recursive: true });
+    const kubernetesManifestPath = path.join(kubernetesDir, "candidate.toml");
+    const kubernetesDevPath = path.join(kubernetesDir, "dev.toml");
+    await writeFile(
+      kubernetesManifestPath,
+      manifestToml(filterManifest(manifest, nativeSet)),
+    );
+    await writeFile(
+      kubernetesDevPath,
+      manifestToml(filterManifest(devManifest, nativeSet)),
+    );
+    for (const [kind, stable] of Object.entries(stableManifests)) {
+      if (kind === "dev") continue;
+      await writeFile(
+        path.join(kubernetesDir, `${kind}.toml`),
+        manifestToml(filterManifest(stable, nativeSet)),
+      );
+    }
+    kubernetesResult = await runKubernetesGate({
+      ...opts,
+      manifestPath: kubernetesManifestPath,
+      devManifestPath: kubernetesDevPath,
+      scratchDir: path.join(opts.scratchDir, "kubernetes"),
+      outputDir: path.join(opts.outputDir, "kubernetes"),
+      changedComponents: opts.changedComponents?.filter((name) => !nativeSet.has(name)),
+    });
+  }
+
+  const environments = kubernetesResult?.cells.map((cell) =>
+    parseGateEnvironment(cell.environment)
+  ) ?? enabledCloudflareEnvironments(opts.widenedGate ?? true);
+  const nativeCells: GateCellReport[] = [];
+  for (const environment of environments) {
+    const cellDir = path.join(coordinationDir, `native-${environmentName(environment)}`);
+    await mkdir(cellDir, { recursive: true });
+    const cellManifest = path.join(cellDir, "manifest.toml");
+    await writeFile(
+      cellManifest,
+      pinnedManifestToml(
+        environment,
+        components.filter((component) => nativeSet.has(component.name)),
+      ),
+    );
+    try {
+      await inspectNativeComponentSpecs(
+        cellManifest,
+        path.join(cellDir, "inspection"),
+        opts.localOverrides,
+      );
+      nativeCells.push({
+        environment: environmentName(environment),
+        ok: true,
+        failures: [],
+      });
+    } catch (error) {
+      nativeCells.push(nativeFailureCell(environment, error));
+    }
+  }
+
+  const cells = mergeGateCells(kubernetesResult?.cells ?? [], nativeCells);
+  const result = resultFromCells(cells);
+  return {
+    ...result,
+    text: `${result.text}\nCloudflare proof: each repository's henosis.ts executed separately and its emitted Worker definition/context matched the deployed connector contract. This checks configurability, not deployability.\n`,
+  };
+}
+
+/** Runs tsc once, then the Kubernetes pipeline in every enabled blocking cell. */
+async function runKubernetesGate(opts: GateCliOptions): Promise<GateRunResult> {
   const manifest = parseManifest(await readFile(opts.manifestPath, "utf8"));
   const devManifest = parseManifest(await readFile(opts.devManifestPath, "utf8"));
   const stableManifests = await loadFollowerManifests(
@@ -320,6 +426,121 @@ function inferChangedComponents(
     })
     .map(([name]) => name)
     .sort(compareCodeUnits);
+}
+
+function filterManifest(
+  manifest: EnvironmentManifest,
+  excluded: ReadonlySet<string>,
+): EnvironmentManifest {
+  return {
+    environment: manifest.environment,
+    components: Object.fromEntries(
+      Object.entries(manifest.components).filter(([name]) => !excluded.has(name)),
+    ),
+  };
+}
+
+function manifestToml(manifest: EnvironmentManifest): string {
+  const lines = [
+    "[environment]",
+    `id = ${JSON.stringify(environmentName(manifest.environment))}`,
+    "",
+  ];
+  for (const [name, entry] of Object.entries(manifest.components)) {
+    lines.push(`[components.${name}]`);
+    if (entry.kind === "follower") {
+      lines.push(`follow = ${JSON.stringify(entry.follow)}`, "");
+    } else {
+      lines.push(
+        `repo = ${JSON.stringify(entry.repo)}`,
+        `ref = ${JSON.stringify(entry.ref)}`,
+        `digest = ${JSON.stringify(entry.digest)}`,
+        "",
+      );
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function pinnedManifestToml(
+  environment: RuntimeEnv,
+  components: readonly ResolvedComponent[],
+): string {
+  return manifestToml({
+    environment,
+    components: Object.fromEntries(
+      components.map((component) => [
+        component.name,
+        {
+          kind: "pinned" as const,
+          repo: component.repo,
+          ref: component.ref,
+          digest: component.digest,
+        },
+      ]),
+    ),
+  });
+}
+
+function enabledCloudflareEnvironments(widened: boolean): RuntimeEnv[] {
+  return widened
+    ? [
+        { kind: "dev" },
+        { kind: "prod" },
+        { kind: "preview", id: representativePreviewName },
+      ]
+    : [{ kind: "dev" }];
+}
+
+function parseGateEnvironment(environment: string): RuntimeEnv {
+  return environment.startsWith("preview_")
+    ? { kind: "preview", id: environment }
+    : { kind: environment };
+}
+
+function nativeFailureResult(
+  environment: RuntimeEnv,
+  error: unknown,
+): GateRunResult {
+  return resultFromCells([nativeFailureCell(environment, error)]);
+}
+
+function nativeFailureCell(
+  environment: RuntimeEnv,
+  error: unknown,
+): GateCellReport {
+  const stage: GateCellStage = "build";
+  const failures = withFailureContext(
+    [
+      renderFailure(
+        `Native component definition check failed: ${errorMessage(error)}`,
+      ),
+    ],
+    environment,
+    stage,
+  );
+  return {
+    environment: environmentName(environment),
+    ok: false,
+    failures: cellFailures(failures, stage),
+  };
+}
+
+function mergeGateCells(
+  kubernetes: readonly GateCellReport[],
+  native: readonly GateCellReport[],
+): GateCellReport[] {
+  const byEnvironment = new Map<string, GateCellReport>();
+  for (const cell of [...kubernetes, ...native]) {
+    const current = byEnvironment.get(cell.environment);
+    const failures = [...(current?.failures ?? []), ...cell.failures];
+    byEnvironment.set(cell.environment, {
+      environment: cell.environment,
+      ok: failures.length === 0,
+      failures,
+    });
+  }
+  return [...byEnvironment.values()];
 }
 
 async function loadFollowerManifests(

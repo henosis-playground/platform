@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -16,6 +17,8 @@ import {
   assembleWorkspace,
   readComponentDependencyGraph,
   resolveManifestComponents,
+  type LocalOverrides,
+  type ResolvedComponent,
 } from "./assembler.js";
 import { extractInstalledOutputSchema } from "./contract-diagnostics.js";
 import { parseManifest } from "./manifest.js";
@@ -25,12 +28,14 @@ import type { SchemaData } from "./schema-data.js";
 /** Static output schemas keyed by component name. */
 export type OutputSchemas = Readonly<Record<string, SchemaData>>;
 
-interface DependencySpecHashSlot {
+/** One connector-context location filled with a producer's immutable spec hash. */
+export interface DependencySpecHashSlot {
   readonly component: string;
   readonly pointer: string;
 }
 
-interface InspectedComponentSpec {
+/** One connector-owned component spec returned by repository inspection. */
+export interface InspectedComponentSpec {
   readonly connector: string;
   readonly dependencies: readonly string[];
   readonly outputsSchema: string;
@@ -38,13 +43,16 @@ interface InspectedComponentSpec {
   readonly dependencySpecHashSlots?: readonly DependencySpecHashSlot[];
 }
 
-interface ComponentSpecInspection {
+/** Complete versioned component-spec inspection result. */
+export interface ComponentSpecInspection {
   readonly apiVersion: "henosis.dev/component-spec-inspection/v1";
   readonly components: Readonly<Record<string, InspectedComponentSpec>>;
 }
 
 interface NativeDefinition {
+  readonly outputs?: unknown;
   readonly inputs?: Readonly<Record<string, NativeInputReference>>;
+  readonly environments?: readonly string[];
 }
 
 interface NativeInputReference {
@@ -96,25 +104,12 @@ export async function inspectOutputSchemas(
 export async function inspectComponentSpecs(
   manifestPath: string,
   scratchDir: string,
+  localOverrides: LocalOverrides = {},
 ): Promise<ComponentSpecInspection> {
   const source = await readFile(manifestPath, "utf8");
   const manifest = parseManifest(source);
   const resolved = resolveManifestComponents({ manifest, stableManifests: {} });
-  const checkoutsRoot = path.join(scratchDir, "checkouts");
-  await mkdir(checkoutsRoot, { recursive: true });
-
-  const checkouts: NativeCheckout[] = [];
-  for (const component of resolved) {
-    const root = path.join(checkoutsRoot, component.name);
-    await checkout(component.repo, component.ref, root);
-    checkouts.push({
-      name: component.name,
-      repo: component.repo,
-      ref: component.ref,
-      digest: component.digest,
-      root,
-    });
-  }
+  const checkouts = await checkoutComponents(resolved, scratchDir, localOverrides);
 
   const native = checkouts.filter(
     (component) =>
@@ -140,6 +135,32 @@ export async function inspectComponentSpecs(
       : await inspectCloudflareComponent(component, environmentName(manifest.environment));
   }
 
+  return {
+    apiVersion: "henosis.dev/component-spec-inspection/v1",
+    components,
+  };
+}
+
+/** Executes and validates only per-repository native component definitions. */
+export async function inspectNativeComponentSpecs(
+  manifestPath: string,
+  scratchDir: string,
+  localOverrides: LocalOverrides = {},
+): Promise<ComponentSpecInspection> {
+  const manifest = parseManifest(await readFile(manifestPath, "utf8"));
+  const resolved = resolveManifestComponents({ manifest, stableManifests: {} });
+  const checkouts = await checkoutComponents(resolved, scratchDir, localOverrides);
+  const components: Record<string, InspectedComponentSpec> = {};
+  for (const component of checkouts) {
+    if (existsSync(path.join(component.root, "supabase", "config.toml"))) {
+      components[component.name] = await inspectSupabaseComponent(component);
+    } else if (existsSync(path.join(component.root, "henosis.ts"))) {
+      components[component.name] = await inspectCloudflareComponent(
+        component,
+        environmentName(manifest.environment),
+      );
+    }
+  }
   return {
     apiVersion: "henosis.dev/component-spec-inspection/v1",
     components,
@@ -281,16 +302,7 @@ async function inspectCloudflareComponent(
   return {
     connector: "cloudflare",
     dependencies,
-    outputsSchema: encodeJson({
-      kind: "object",
-      shape: {
-        url: { kind: "url", role: "ui" },
-        workerName: { kind: "string" },
-        deploymentId: { kind: "string" },
-        versionId: { kind: "string" },
-        claimUrl: { kind: "url" },
-      },
-    }),
+    outputsSchema: encodeJson(cloudflareOutputsSchema()),
     connectorContext: encodeJson(context),
     dependencySpecHashSlots,
   };
@@ -319,6 +331,19 @@ async function importNativeDefinition(
     isRecord(parsed) && isRecord(parsed.default) ? parsed.default : parsed;
   if (!isRecord(definition)) {
     throw new Error(`${component.name} henosis.ts must default-export a Worker definition`);
+  }
+  if (!sameJson(definition.outputs, cloudflareOutputsSchema())) {
+    throw new Error(
+      `${component.name} must declare the connector-owned Cloudflare Worker outputs`,
+    );
+  }
+  if (
+    !Array.isArray(definition.environments) ||
+    definition.environments.join(",") !== "dev,prod,preview"
+  ) {
+    throw new Error(
+      `${component.name} must support exactly dev, prod, and preview environments`,
+    );
   }
   const inputs = definition.inputs;
   if (inputs !== undefined && !isRecord(inputs)) {
@@ -445,6 +470,39 @@ async function inspectSupabaseComponent(
 
 // === Process and format helpers ===
 
+async function checkoutComponents(
+  components: readonly ResolvedComponent[],
+  scratchDir: string,
+  localOverrides: LocalOverrides,
+): Promise<NativeCheckout[]> {
+  const checkoutsRoot = path.join(scratchDir, "checkouts");
+  await mkdir(checkoutsRoot, { recursive: true });
+  const checkouts: NativeCheckout[] = [];
+  for (const component of components) {
+    const root = path.join(checkoutsRoot, component.name);
+    const local = localOverrides[component.name];
+    if (local === undefined) {
+      await checkout(component.repo, component.ref, root);
+    } else {
+      await cp(path.resolve(local), root, {
+        recursive: true,
+        filter: (source) =>
+          !source.split(path.sep).some((part) =>
+            part === ".git" || part === "node_modules" || part === ".wrangler"
+          ),
+      });
+    }
+    checkouts.push({
+      name: component.name,
+      repo: component.repo,
+      ref: component.ref,
+      digest: component.digest,
+      root,
+    });
+  }
+  return checkouts;
+}
+
 async function checkout(repo: string, ref: string, target: string): Promise<void> {
   await mkdir(target, { recursive: true });
   await runCommand("git", ["init", "--quiet"], target);
@@ -523,6 +581,23 @@ function environmentName(value: unknown): string {
 
 function encodeJson(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64");
+}
+
+function cloudflareOutputsSchema(): Readonly<Record<string, unknown>> {
+  return {
+    kind: "object",
+    shape: {
+      url: { kind: "url", role: "ui" },
+      workerName: { kind: "string" },
+      deploymentId: { kind: "string" },
+      versionId: { kind: "string" },
+      claimUrl: { kind: "url" },
+    },
+  };
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function parseSimpleToml(source: string): Record<string, unknown> {

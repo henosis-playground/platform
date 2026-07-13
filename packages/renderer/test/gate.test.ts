@@ -54,6 +54,22 @@ describe("widened merge gate", () => {
     ]);
   });
 
+  it("checks Cloudflare definitions without sending them through Kubernetes", async () => {
+    const fixture = await makeCloudflareGateFixture();
+    const result = await runGate(fixture.options);
+
+    expect(result.report).toEqual({ ok: true, failures: [] });
+    expect(result.cells.map((cell) => [cell.environment, cell.ok])).toEqual([
+      ["dev", true],
+      ["prod", true],
+      ["preview_3jhc7x633z88188fzqhcbbrf84", true],
+    ]);
+    expect(result.text).toContain(
+      "each repository's henosis.ts executed separately",
+    );
+    expect(result.text).not.toContain("Kubernetes");
+  });
+
   it("representative preview materializes the candidate and borrows unchanged consenters", async () => {
     const fixture = await makeRepresentativeBorrowFixture();
     const result = await runGate(fixture.options);
@@ -66,6 +82,63 @@ describe("widened merge gate", () => {
     ]);
   });
 });
+
+async function makeCloudflareGateFixture(): Promise<{
+  options: Parameters<typeof runGate>[0];
+}> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "henosis-cloudflare-gate-"));
+  scratchDirs.push(root);
+  const componentDir = path.join(root, "service-f");
+  await mkdir(path.join(componentDir, "src"), { recursive: true });
+  await writeFile(
+    path.join(componentDir, "henosis.ts"),
+    `
+      export default {
+        outputs: {
+          kind: "object",
+          shape: {
+            url: { kind: "url", role: "ui" },
+            workerName: { kind: "string" },
+            deploymentId: { kind: "string" },
+            versionId: { kind: "string" },
+            claimUrl: { kind: "url" },
+          },
+        },
+        inputs: {
+          BACKEND_URL: { kind: "url", component: "service-a", output: "api" },
+        },
+        environments: ["dev", "prod", "preview"],
+      };
+    `,
+  );
+  await writeFile(
+    path.join(componentDir, "wrangler.toml"),
+    'name = "service-f"\nmain = "src/index.js"\n',
+  );
+  await writeFile(path.join(componentDir, "src", "index.js"), "export default {};\n");
+  const manifestPath = path.join(root, "candidate.toml");
+  const devManifestPath = path.join(root, "dev.toml");
+  const manifest = `
+    [environment]
+    id = "dev"
+
+    [components.service-f]
+    repo = "henosis-playground/service-f"
+    ref = "ffffffffffffffffffffffffffffffffffffffff"
+    digest = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  `;
+  await writeFile(manifestPath, manifest);
+  await writeFile(devManifestPath, manifest);
+  return {
+    options: {
+      manifestPath,
+      devManifestPath,
+      scratchDir: path.join(root, "scratch"),
+      outputDir: path.join(root, "output"),
+      localOverrides: { "service-f": componentDir },
+    },
+  };
+}
 
 async function makeGateFixture(): Promise<{
   options: Parameters<typeof runGate>[0];
