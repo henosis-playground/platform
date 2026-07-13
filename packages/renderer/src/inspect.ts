@@ -50,9 +50,19 @@ export interface ComponentSpecInspection {
 }
 
 interface NativeDefinition {
+  readonly kind?: string;
   readonly outputs?: unknown;
   readonly inputs?: Readonly<Record<string, NativeInputReference>>;
   readonly environments?: readonly string[];
+  readonly migrationsDir?: string;
+  readonly schema?: string;
+  readonly api?: {
+    readonly expose?: unknown;
+    readonly anonAccess?: unknown;
+  };
+  readonly migrationInputs?: Readonly<
+    Record<string, Readonly<Record<string, NativeInputReference>>>
+  >;
 }
 
 interface NativeInputReference {
@@ -111,10 +121,8 @@ export async function inspectComponentSpecs(
   const resolved = resolveManifestComponents({ manifest, stableManifests: {} });
   const checkouts = await checkoutComponents(resolved, scratchDir, localOverrides);
 
-  const native = checkouts.filter(
-    (component) =>
-      existsSync(path.join(component.root, "henosis.ts")) ||
-      existsSync(path.join(component.root, "supabase", "config.toml")),
+  const native = checkouts.filter((component) =>
+    existsSync(path.join(component.root, "henosis.ts")),
   );
   const kubernetes = checkouts.filter(
     (component) => !native.includes(component),
@@ -128,11 +136,10 @@ export async function inspectComponentSpecs(
     );
   }
   for (const component of native) {
-    components[component.name] = existsSync(
-      path.join(component.root, "supabase", "config.toml"),
-    )
-      ? await inspectSupabaseComponent(component)
-      : await inspectCloudflareComponent(component, environmentName(manifest.environment));
+    components[component.name] = await inspectNativeComponent(
+      component,
+      environmentName(manifest.environment),
+    );
   }
 
   return {
@@ -152,10 +159,8 @@ export async function inspectNativeComponentSpecs(
   const checkouts = await checkoutComponents(resolved, scratchDir, localOverrides);
   const components: Record<string, InspectedComponentSpec> = {};
   for (const component of checkouts) {
-    if (existsSync(path.join(component.root, "supabase", "config.toml"))) {
-      components[component.name] = await inspectSupabaseComponent(component);
-    } else if (existsSync(path.join(component.root, "henosis.ts"))) {
-      components[component.name] = await inspectCloudflareComponent(
+    if (existsSync(path.join(component.root, "henosis.ts"))) {
+      components[component.name] = await inspectNativeComponent(
         component,
         environmentName(manifest.environment),
       );
@@ -258,9 +263,9 @@ async function deployedDevRefs(): Promise<Record<string, string>> {
   );
 }
 
-// === Cloudflare collection ===
+// === Per-repository TypeScript collection ===
 
-async function inspectCloudflareComponent(
+async function inspectNativeComponent(
   component: NativeCheckout,
   environmentId: string,
 ): Promise<InspectedComponentSpec> {
@@ -268,6 +273,38 @@ async function inspectCloudflareComponent(
     await runCommand("pnpm", ["install", "--frozen-lockfile"], component.root);
   }
   const definition = await importNativeDefinition(component);
+  return definition.kind === "supabase.database"
+    ? inspectSupabaseComponent(component, definition)
+    : inspectCloudflareComponent(component, environmentId, definition);
+}
+
+// === Cloudflare collection ===
+
+async function inspectCloudflareComponent(
+  component: NativeCheckout,
+  environmentId: string,
+  definition: NativeDefinition,
+): Promise<InspectedComponentSpec> {
+  if (!sameJson(definition.outputs, cloudflareOutputsSchema())) {
+    throw new Error(
+      `${component.name} must declare the connector-owned Cloudflare Worker outputs`,
+    );
+  }
+  if (
+    !Array.isArray(definition.environments) ||
+    definition.environments.join(",") !== "dev,prod,preview"
+  ) {
+    throw new Error(
+      `${component.name} must support exactly dev, prod, and preview environments`,
+    );
+  }
+  const inputsDefinition = definition.inputs;
+  if (inputsDefinition !== undefined && !isRecord(inputsDefinition)) {
+    throw new Error(`${component.name} inputs must be an object`);
+  }
+  for (const [key, input] of Object.entries(inputsDefinition ?? {})) {
+    assertNativeInputReference(component.name, key, input);
+  }
   const wrangler = parseSimpleToml(
     await readFile(path.join(component.root, "wrangler.toml"), "utf8"),
   );
@@ -337,35 +374,7 @@ async function importNativeDefinition(
   const definition =
     isRecord(parsed) && isRecord(parsed.default) ? parsed.default : parsed;
   if (!isRecord(definition)) {
-    throw new Error(`${component.name} henosis.ts must default-export a Worker definition`);
-  }
-  if (!sameJson(definition.outputs, cloudflareOutputsSchema())) {
-    throw new Error(
-      `${component.name} must declare the connector-owned Cloudflare Worker outputs`,
-    );
-  }
-  if (
-    !Array.isArray(definition.environments) ||
-    definition.environments.join(",") !== "dev,prod,preview"
-  ) {
-    throw new Error(
-      `${component.name} must support exactly dev, prod, and preview environments`,
-    );
-  }
-  const inputs = definition.inputs;
-  if (inputs !== undefined && !isRecord(inputs)) {
-    throw new Error(`${component.name} inputs must be an object`);
-  }
-  for (const [key, input] of Object.entries(inputs ?? {})) {
-    if (
-      !isRecord(input) ||
-      (input.kind !== undefined &&
-        !["string", "url", "secret"].includes(String(input.kind))) ||
-      typeof input.component !== "string" ||
-      typeof input.output !== "string"
-    ) {
-      throw new Error(`${component.name} input ${key} is not a typed output reference`);
-    }
+    throw new Error(`${component.name} henosis.ts must default-export a component definition`);
   }
   return definition as unknown as NativeDefinition;
 }
@@ -404,32 +413,89 @@ async function walkFiles(root: string, relative: string): Promise<string[]> {
 
 async function inspectSupabaseComponent(
   component: NativeCheckout,
+  definition: NativeDefinition,
 ): Promise<InspectedComponentSpec> {
-  const config = parseSimpleToml(
-    await readFile(path.join(component.root, "supabase", "config.toml"), "utf8"),
+  if (!sameJson(definition.outputs, supabaseOutputsSchema())) {
+    throw new Error(
+      `${component.name} must declare the connector-owned Supabase database outputs`,
+    );
+  }
+  if (
+    !Array.isArray(definition.environments) ||
+    definition.environments.join(",") !== "dev,prod,preview"
+  ) {
+    throw new Error(
+      `${component.name} must support exactly dev, prod, and preview environments`,
+    );
+  }
+  const migrationsDir = requiredString(
+    definition.migrationsDir,
+    `${component.name} migrationsDir`,
   );
-  const projectId = optionalString(config.project_id) ?? component.name;
-  const schema = projectId.replaceAll("-", "_");
-  const schemas = nestedStrings(config, "api", "schemas");
-  const migrationDirectory = path.join(component.root, "supabase", "migrations");
-  const migrationNames = existsSync(migrationDirectory)
-    ? (await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort()
-    : [];
+  if (
+    path.isAbsolute(migrationsDir) ||
+    migrationsDir.split(/[\\/]/u).includes("..")
+  ) {
+    throw new Error(`${component.name} migrationsDir must stay within the repository`);
+  }
+  const schema = requiredString(definition.schema, `${component.name} schema`);
+  if (!/^[a-z][a-z0-9_]{0,62}$/u.test(schema)) {
+    throw new Error(`${component.name} schema must match [a-z][a-z0-9_]{0,62}`);
+  }
+  const api = definition.api;
+  if (
+    !isRecord(api) ||
+    typeof api.expose !== "boolean" ||
+    !["none", "read"].includes(String(api.anonAccess))
+  ) {
+    throw new Error(`${component.name} api must configure expose and anonAccess`);
+  }
+
+  const migrationDirectory = path.resolve(component.root, migrationsDir);
+  const migrationNames = (await readdir(migrationDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+    .map((entry) => entry.name)
+    .sort(compareCodeUnits);
+  const configuredInputs = definition.migrationInputs ?? {};
+  for (const migrationId of Object.keys(configuredInputs)) {
+    if (!migrationNames.includes(`${migrationId}.sql`)) {
+      throw new Error(
+        `${component.name} configures inputs for missing migration ${JSON.stringify(migrationId)}`,
+      );
+    }
+  }
+
+  const dependencies = new Set<string>();
+  const dependencySpecHashSlots: DependencySpecHashSlot[] = [];
   const migrations = await Promise.all(
-    migrationNames.map(async (name) => {
+    migrationNames.map(async (name, migrationIndex) => {
+      const id = name.slice(0, -4);
       const sql = await readFile(path.join(migrationDirectory, name), "utf8");
+      const values = configuredInputs[id] ?? {};
+      const inputs = Object.entries(values)
+        .sort(([left], [right]) => compareCodeUnits(left, right))
+        .map(([inputName, input], inputIndex) => {
+          assertNativeInputReference(component.name, inputName, input);
+          dependencies.add(input.component);
+          dependencySpecHashSlots.push({
+            component: input.component,
+            pointer: `/migrations/${migrationIndex}/inputs/${inputIndex}/producerComponentSpecHash`,
+          });
+          return {
+            name: inputName,
+            producerComponentSpecHash: null,
+            output: input.output,
+            default: null,
+          };
+        });
       return {
-        id: name.slice(0, -4),
+        id,
         checksum: `sha256:${createHash("sha256").update(sql).digest("hex")}`,
         sql,
-        inputs: [],
+        inputs,
       };
     }),
   );
-  const sql = migrations.map((migration) => migration.sql).join("\n").toLowerCase();
-  const anonRead =
-    sql.includes(`grant usage on schema ${schema} to anon`) &&
-    sql.includes(`grant select on all tables in schema ${schema} to anon`);
   const context = {
     apiVersion: "henosis.dev/supabase-component-context/v1",
     resourceId: schema,
@@ -440,38 +506,14 @@ async function inspectSupabaseComponent(
       schema,
     },
     migrations,
-    api: {
-      expose: nestedBoolean(config, "api", "enabled", true) && schemas.includes(schema),
-      anonAccess: anonRead ? "read" : "none",
-    },
+    api: { expose: api.expose, anonAccess: api.anonAccess },
   };
   return {
     connector: "supabase",
-    dependencies: [],
-    outputsSchema: encodeJson({
-      $schema: "https://json-schema.org/draft/2020-12/schema",
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "project",
-        "database",
-        "schema",
-        "apiUrl",
-        "restUrl",
-        "databaseUrlRef",
-        "anonKeyRef",
-      ],
-      properties: {
-        project: { type: "string" },
-        database: { type: "string" },
-        schema: { type: "string" },
-        apiUrl: { type: "string", format: "uri" },
-        restUrl: { type: "string", format: "uri" },
-        databaseUrlRef: { type: "string" },
-        anonKeyRef: { type: "string" },
-      },
-    }),
+    dependencies: [...dependencies].sort(compareCodeUnits),
+    outputsSchema: encodeJson(definition.outputs),
     connectorContext: encodeJson(context),
+    ...(dependencySpecHashSlots.length === 0 ? {} : { dependencySpecHashSlots }),
   };
 }
 
@@ -603,6 +645,33 @@ function cloudflareOutputsSchema(): Readonly<Record<string, unknown>> {
   };
 }
 
+function supabaseOutputsSchema(): Readonly<Record<string, unknown>> {
+  return {
+    kind: "object",
+    shape: {
+      restUrl: { kind: "url" },
+      schema: { kind: "string" },
+      anonKeyRef: { kind: "secret-ref" },
+    },
+  };
+}
+
+function assertNativeInputReference(
+  component: string,
+  key: string,
+  input: NativeInputReference,
+): void {
+  if (
+    !isRecord(input) ||
+    !["string", "url", "secret"].includes(String(input.kind)) ||
+    typeof input.component !== "string" ||
+    typeof input.output !== "string" ||
+    input.output.length === 0
+  ) {
+    throw new Error(`${component} input ${key} is not a typed output reference`);
+  }
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -654,29 +723,6 @@ function nestedString(
   return isRecord(nested) ? optionalString(nested[field]) : undefined;
 }
 
-function nestedStrings(
-  value: Record<string, unknown>,
-  section: string,
-  field: string,
-): string[] {
-  const nested = value[section];
-  const candidate = isRecord(nested) ? nested[field] : undefined;
-  return Array.isArray(candidate)
-    ? candidate.filter((entry): entry is string => typeof entry === "string")
-    : [];
-}
-
-function nestedBoolean(
-  value: Record<string, unknown>,
-  section: string,
-  field: string,
-  fallback: boolean,
-): boolean {
-  const nested = value[section];
-  const candidate = isRecord(nested) ? nested[field] : undefined;
-  return typeof candidate === "boolean" ? candidate : fallback;
-}
-
 function conciseCommandError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const runtimeError = /^Error:\s+(.+)$/m.exec(message)?.[1];
@@ -685,6 +731,10 @@ function conciseCommandError(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 async function main(): Promise<void> {

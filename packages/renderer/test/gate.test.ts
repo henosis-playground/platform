@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { runGate } from "../src/gate.js";
+import { inspectNativeComponentSpecs } from "../src/inspect.js";
 
 const scratchDirs: string[] = [];
 
@@ -67,7 +68,52 @@ describe("widened merge gate", () => {
     expect(result.text).toContain(
       "each repository's henosis.ts executed separately",
     );
+    expect(result.text).toContain("Native platform proof");
     expect(result.text).not.toContain("Kubernetes");
+  });
+
+  it("executes a Supabase definition and checksums referenced native SQL", async () => {
+    const fixture = await makeSupabaseFixture();
+    const inspection = await inspectNativeComponentSpecs(
+      fixture.manifestPath,
+      fixture.scratchDir,
+      { "service-d": fixture.componentDir },
+    );
+    const component = inspection.components["service-d"];
+    const context = JSON.parse(
+      Buffer.from(component?.connectorContext ?? "", "base64").toString("utf8"),
+    );
+
+    expect(component).toMatchObject({
+      connector: "supabase",
+      dependencies: ["service-a"],
+      dependencySpecHashSlots: [
+        {
+          component: "service-a",
+          pointer: "/migrations/0/inputs/0/producerComponentSpecHash",
+        },
+      ],
+    });
+    expect(context).toMatchObject({
+      resourceId: "service_d",
+      api: { expose: true, anonAccess: "read" },
+      migrations: [
+        {
+          id: "202607130001_create_items",
+          checksum:
+            "sha256:77f617c9e1a04d7aa174eaddb822f5805b0978c1bb886920d4e257149b589e96",
+          sql: "create table service_d.items (id bigint primary key);\n",
+          inputs: [
+            {
+              name: "upstream_url",
+              producerComponentSpecHash: null,
+              output: "api",
+              default: null,
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("representative preview materializes the candidate and borrows unchanged consenters", async () => {
@@ -82,6 +128,69 @@ describe("widened merge gate", () => {
     ]);
   });
 });
+
+async function makeSupabaseFixture(): Promise<{
+  manifestPath: string;
+  scratchDir: string;
+  componentDir: string;
+}> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "henosis-supabase-inspect-"));
+  scratchDirs.push(root);
+  const componentDir = path.join(root, "service-d");
+  await mkdir(path.join(componentDir, "supabase", "migrations"), { recursive: true });
+  await writeFile(
+    path.join(componentDir, "henosis.ts"),
+    `
+      export default {
+        kind: "supabase.database",
+        outputs: {
+          kind: "object",
+          shape: {
+            restUrl: { kind: "url" },
+            schema: { kind: "string" },
+            anonKeyRef: { kind: "secret-ref" },
+          },
+        },
+        migrationsDir: "./supabase/migrations",
+        schema: "service_d",
+        api: { expose: true, anonAccess: "read" },
+        migrationInputs: {
+          "202607130001_create_items": {
+            upstream_url: { kind: "url", component: "service-a", output: "api" },
+          },
+        },
+        environments: ["dev", "prod", "preview"],
+      };
+    `,
+  );
+  await writeFile(
+    path.join(
+      componentDir,
+      "supabase",
+      "migrations",
+      "202607130001_create_items.sql",
+    ),
+    "create table service_d.items (id bigint primary key);\n",
+  );
+  const manifestPath = path.join(root, "candidate.toml");
+  await writeFile(
+    manifestPath,
+    `
+      [environment]
+      id = "dev"
+
+      [components.service-d]
+      repo = "henosis-playground/service-d"
+      ref = "dddddddddddddddddddddddddddddddddddddddd"
+      digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    `,
+  );
+  return {
+    manifestPath,
+    scratchDir: path.join(root, "scratch"),
+    componentDir,
+  };
+}
 
 async function makeCloudflareGateFixture(): Promise<{
   options: Parameters<typeof runGate>[0];

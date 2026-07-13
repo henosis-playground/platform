@@ -178,7 +178,7 @@ export async function runGate(opts: GateCliOptions): Promise<GateRunResult> {
   const result = resultFromCells(cells);
   return {
     ...result,
-    text: `${result.text}\nCloudflare proof: each repository's henosis.ts executed separately and its emitted Worker definition/context matched the deployed connector contract. This checks configurability, not deployability.\n`,
+    text: `${result.text}\nNative platform proof: each repository's henosis.ts executed separately and its emitted definition/context matched the deployed connector contract. This checks configurability, not deployability.\n`,
   };
 }
 
