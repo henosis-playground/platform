@@ -23,6 +23,10 @@ export {
   type ExecutionResult,
 } from "./execute.js";
 export {
+  inspectOutputSchemas,
+  type OutputSchemas,
+} from "./inspect.js";
+export {
   renderManifest,
   type RenderManifest,
   type RenderManifestComponent,

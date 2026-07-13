@@ -107,13 +107,14 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PATH="$root/.henosis-bin:$PATH"
 export PATH
 if [ "$#" -eq 0 ]; then
-  echo "Usage: henosis-runner <gate|render> [args...]" >&2
+  echo "Usage: henosis-runner <gate|inspect|render> [args...]" >&2
   exit 2
 fi
 command="$1"
 shift
 case "$command" in
   gate) exec node "$root/packages/renderer/dist/gate.js" "$@" ;;
+  inspect) exec node "$root/packages/renderer/dist/inspect.js" "$@" ;;
   render) exec node "$root/packages/renderer/dist/render.js" "$@" ;;
   *) echo "Unknown Henosis runner command: $command" >&2; exit 2 ;;
 esac

@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "henosis-render": "./dist/render.js",
-    "henosis-gate": "./dist/gate.js"
+    "henosis-gate": "./dist/gate.js",
+    "henosis-inspect": "./dist/inspect.js"
   },
   "exports": {
     ".": {
