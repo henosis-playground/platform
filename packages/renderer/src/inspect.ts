@@ -319,11 +319,18 @@ async function importNativeDefinition(
   const rendererPackageRoot = path.resolve(
     fileURLToPath(new URL("..", import.meta.url)),
   );
-  const encoded = await runCapture(
-    process.execPath,
-    ["--import", "tsx", "--input-type=module", "--eval", script, moduleUrl],
-    rendererPackageRoot,
-  );
+  let encoded: string;
+  try {
+    encoded = await runCapture(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script, moduleUrl],
+      rendererPackageRoot,
+    );
+  } catch (error) {
+    throw new Error(
+      `${component.name} henosis.ts failed: ${conciseCommandError(error)}`,
+    );
+  }
   const parsed: unknown = JSON.parse(
     encoded.trim().split("\n").at(-1) ?? "null",
   );
@@ -668,6 +675,12 @@ function nestedBoolean(
   const nested = value[section];
   const candidate = isRecord(nested) ? nested[field] : undefined;
   return typeof candidate === "boolean" ? candidate : fallback;
+}
+
+function conciseCommandError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const runtimeError = /^Error:\s+(.+)$/m.exec(message)?.[1];
+  return runtimeError ?? message.split("\n")[0] ?? "unknown execution failure";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
