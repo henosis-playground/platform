@@ -55,8 +55,17 @@ export type DeclaredOutputs<Shape extends InputOutputShape> = {
 };
 /** Anonymous PostgREST access implemented by the deployed connector. */
 export type AnonAccess = "none" | "read";
+/** JSON value accepted as a fallback for an absent producer output. */
+export type JsonValue = null | boolean | number | string | readonly JsonValue[] | {
+    readonly [key: string]: JsonValue;
+};
+/** One typed producer output with an optional connector-supported fallback. */
+export type MigrationInput = OutputReference<unknown, InputKind> | {
+    readonly from: OutputReference<unknown, InputKind>;
+    readonly default: JsonValue;
+};
 /** Per-migration transaction-local settings sourced from typed outputs. */
-export type MigrationInputs = Readonly<Record<string, Readonly<Record<string, OutputReference<unknown, InputKind>>>>>;
+export type MigrationInputs = Readonly<Record<string, Readonly<Record<string, MigrationInput>>>>;
 /** Author-facing database definition. */
 export interface DatabaseSpec<Inputs extends MigrationInputs> {
     /** Connector-owned outputs published after successful reconciliation. */

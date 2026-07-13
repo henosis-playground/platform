@@ -108,7 +108,7 @@ describe("widened merge gate", () => {
               name: "upstream_url",
               producerComponentSpecHash: null,
               output: "api",
-              default: null,
+              default: "http://service-a.invalid",
             },
           ],
         },
@@ -156,7 +156,10 @@ async function makeSupabaseFixture(): Promise<{
         api: { expose: true, anonAccess: "read" },
         migrationInputs: {
           "202607130001_create_items": {
-            upstream_url: { kind: "url", component: "service-a", output: "api" },
+            upstream_url: {
+              from: { kind: "url", component: "service-a", output: "api" },
+              default: "http://service-a.invalid",
+            },
           },
         },
         environments: ["dev", "prod", "preview"],

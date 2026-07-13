@@ -61,9 +61,16 @@ interface NativeDefinition {
     readonly anonAccess?: unknown;
   };
   readonly migrationInputs?: Readonly<
-    Record<string, Readonly<Record<string, NativeInputReference>>>
+    Record<string, Readonly<Record<string, NativeMigrationInput>>>
   >;
 }
+
+interface NativeInputBinding {
+  readonly from: NativeInputReference;
+  readonly default: unknown;
+}
+
+type NativeMigrationInput = NativeInputReference | NativeInputBinding;
 
 interface NativeInputReference {
   readonly kind: "string" | "url" | "secret";
@@ -474,18 +481,19 @@ async function inspectSupabaseComponent(
       const values = configuredInputs[id] ?? {};
       const inputs = Object.entries(values)
         .sort(([left], [right]) => compareCodeUnits(left, right))
-        .map(([inputName, input], inputIndex) => {
-          assertNativeInputReference(component.name, inputName, input);
-          dependencies.add(input.component);
+        .map(([inputName, configured], inputIndex) => {
+          const binding = nativeInputBinding(configured);
+          assertNativeInputReference(component.name, inputName, binding.from);
+          dependencies.add(binding.from.component);
           dependencySpecHashSlots.push({
-            component: input.component,
+            component: binding.from.component,
             pointer: `/migrations/${migrationIndex}/inputs/${inputIndex}/producerComponentSpecHash`,
           });
           return {
             name: inputName,
             producerComponentSpecHash: null,
-            output: input.output,
-            default: null,
+            output: binding.from.output,
+            default: binding.default,
           };
         });
       return {
@@ -656,6 +664,16 @@ function supabaseOutputsSchema(): Readonly<Record<string, unknown>> {
   };
 }
 
+function nativeInputBinding(input: NativeMigrationInput): NativeInputBinding {
+  if (isRecord(input) && "from" in input) {
+    if (!isRecord(input.from) || !isJsonValue(input.default)) {
+      throw new Error("Migration input defaults must be JSON values");
+    }
+    return { from: input.from as unknown as NativeInputReference, default: input.default };
+  }
+  return { from: input as NativeInputReference, default: null };
+}
+
 function assertNativeInputReference(
   component: string,
   key: string,
@@ -731,6 +749,19 @@ function conciseCommandError(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonValue(value: unknown): boolean {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
 function compareCodeUnits(left: string, right: string): number {

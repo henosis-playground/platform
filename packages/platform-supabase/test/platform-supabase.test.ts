@@ -22,7 +22,7 @@ describe("Supabase database authoring", () => {
         migrationInputs: {
           "202607130001_create_items": {
             upstream_url: upstream.api,
-            upstream_token: upstream.token,
+            upstream_token: { from: upstream.token, default: "local-token-ref" },
           },
         },
       }),
@@ -40,9 +40,12 @@ describe("Supabase database authoring", () => {
             output: "api",
           },
           upstream_token: {
-            kind: "secret",
-            component: "service-a",
-            output: "token",
+            from: {
+              kind: "secret",
+              component: "service-a",
+              output: "token",
+            },
+            default: "local-token-ref",
           },
         },
       },

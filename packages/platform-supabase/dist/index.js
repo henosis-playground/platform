@@ -80,8 +80,9 @@ function assertMigrationInputs(inputs) {
             if (!/^[a-z][a-z0-9_]{0,62}$/u.test(name)) {
                 throw new Error(`Invalid migration input name ${JSON.stringify(name)}`);
             }
-            assertComponentName(value.component);
-            if (value.output.length === 0)
+            const output = "from" in value ? value.from : value;
+            assertComponentName(output.component);
+            if (output.output.length === 0)
                 throw new Error("Output name must not be empty");
         }
     }
