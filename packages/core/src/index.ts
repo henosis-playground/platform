@@ -12,6 +12,9 @@ declare const schemaTypeBrand: unique symbol;
 declare const refTypeBrand: unique symbol;
 declare const resolvedRecordBrand: unique symbol;
 
+/** Reserved JSON key used for collector-stage symbolic output slots. */
+export const collectionRefSlotKey = "$henosisRef" as const;
+
 const TYPEID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 const TYPEID_VALUES = new Map(
   [...TYPEID_ALPHABET].map((character, index) => [character, index]),
