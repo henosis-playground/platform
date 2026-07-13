@@ -1,4 +1,18 @@
-import { h, } from "@henosis/core";
+/** Constructors for Cloudflare component output contracts. */
+export const h = Object.freeze({
+    object(shape) {
+        return Object.freeze({ kind: "object", shape });
+    },
+    string() {
+        return Object.freeze({ kind: "string" });
+    },
+    url(options) {
+        return Object.freeze({
+            kind: "url",
+            ...(options?.role === undefined ? {} : { role: options.role }),
+        });
+    },
+});
 /** Stable environment kinds supported by the Cloudflare connector. */
 export const stableEnvKinds = ["dev", "prod"];
 /** Static outputs published by every Cloudflare Worker component. */
@@ -51,8 +65,6 @@ export function parseEnvironment(name) {
 export function envName(env) {
     return env.kind === "preview" ? env.id : env.kind;
 }
-/** Output schema constructors re-exported for component authors. */
-export { h };
 function reference(kind, component, output) {
     assertComponentName(component);
     if (output.length === 0)

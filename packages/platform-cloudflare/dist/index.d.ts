@@ -1,4 +1,43 @@
-import { h, type ObjectSchema, type OutputRole, type SchemaShape, type StringSchema, type UrlSchema, type UrlSchemaOptions } from "@henosis/core";
+declare const schemaTypeBrand: unique symbol;
+/** Semantic role attached to a published output. */
+export type OutputRole = "ui";
+/** Metadata accepted when defining a URL output schema. */
+export interface UrlSchemaOptions {
+    /** Marks the URL as a user-facing UI entrypoint. */
+    readonly role: OutputRole;
+}
+/** A runtime output schema carrying its inferred TypeScript value. */
+export interface Schema<Value> {
+    /** Optional semantic role for downstream output discovery. */
+    readonly role?: OutputRole;
+    readonly [schemaTypeBrand]?: Value;
+}
+/** A schema for arbitrary strings. */
+export type StringSchema = Schema<string> & {
+    readonly kind: "string";
+};
+/** A schema for absolute HTTP or HTTPS URLs. */
+export type UrlSchema = Schema<string> & {
+    readonly kind: "url";
+};
+/** Named child schemas accepted by an object schema. */
+export type SchemaShape = Readonly<Record<string, Schema<unknown>>>;
+/** A schema for one named object shape. */
+export interface ObjectSchema<Shape extends SchemaShape> extends Schema<unknown> {
+    readonly kind: "object";
+    readonly shape: Shape;
+}
+/** Public output-schema construction vocabulary. */
+export interface SchemaBuilder {
+    /** Defines an object schema. */
+    object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
+    /** Defines a string schema. */
+    string(): StringSchema;
+    /** Defines an HTTP/HTTPS URL schema with optional output metadata. */
+    url(options?: UrlSchemaOptions): UrlSchema;
+}
+/** Constructors for Cloudflare component output contracts. */
+export declare const h: SchemaBuilder;
 /** Stable environment kinds supported by the Cloudflare connector. */
 export declare const stableEnvKinds: readonly ["dev", "prod"];
 /** Stable environment kind supported by the Cloudflare connector. */
@@ -72,17 +111,5 @@ export declare function defineWorker<const Vars extends WorkerVars>(spec: Worker
 export declare function parseEnvironment(name: string): Env;
 /** Formats a Cloudflare environment canonically. */
 export declare function envName(env: Env): string;
-/** Output schema constructors re-exported for component authors. */
-export { h };
-export type { 
-/** Semantic role attached to a published output. */
-OutputRole, 
-/** Named child schemas accepted by an object schema. */
-SchemaShape, 
-/** String output schema. */
-StringSchema, 
-/** URL output schema. */
-UrlSchema, 
-/** Metadata accepted when defining a URL output schema. */
-UrlSchemaOptions, };
+export {};
 //# sourceMappingURL=index.d.ts.map

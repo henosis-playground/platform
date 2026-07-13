@@ -1,12 +1,62 @@
-import {
-  h,
-  type ObjectSchema,
-  type OutputRole,
-  type SchemaShape,
-  type StringSchema,
-  type UrlSchema,
-  type UrlSchemaOptions,
-} from "@henosis/core";
+declare const schemaTypeBrand: unique symbol;
+
+/** Semantic role attached to a published output. */
+export type OutputRole = "ui";
+
+/** Metadata accepted when defining a URL output schema. */
+export interface UrlSchemaOptions {
+  /** Marks the URL as a user-facing UI entrypoint. */
+  readonly role: OutputRole;
+}
+
+/** A runtime output schema carrying its inferred TypeScript value. */
+export interface Schema<Value> {
+  /** Optional semantic role for downstream output discovery. */
+  readonly role?: OutputRole;
+  readonly [schemaTypeBrand]?: Value;
+}
+
+/** A schema for arbitrary strings. */
+export type StringSchema = Schema<string> & { readonly kind: "string" };
+
+/** A schema for absolute HTTP or HTTPS URLs. */
+export type UrlSchema = Schema<string> & { readonly kind: "url" };
+
+/** Named child schemas accepted by an object schema. */
+export type SchemaShape = Readonly<Record<string, Schema<unknown>>>;
+
+/** A schema for one named object shape. */
+export interface ObjectSchema<Shape extends SchemaShape>
+  extends Schema<unknown> {
+  readonly kind: "object";
+  readonly shape: Shape;
+}
+
+/** Public output-schema construction vocabulary. */
+export interface SchemaBuilder {
+  /** Defines an object schema. */
+  object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
+  /** Defines a string schema. */
+  string(): StringSchema;
+  /** Defines an HTTP/HTTPS URL schema with optional output metadata. */
+  url(options?: UrlSchemaOptions): UrlSchema;
+}
+
+/** Constructors for Cloudflare component output contracts. */
+export const h: SchemaBuilder = Object.freeze({
+  object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape> {
+    return Object.freeze({ kind: "object" as const, shape });
+  },
+  string(): StringSchema {
+    return Object.freeze({ kind: "string" as const });
+  },
+  url(options?: UrlSchemaOptions): UrlSchema {
+    return Object.freeze({
+      kind: "url" as const,
+      ...(options?.role === undefined ? {} : { role: options.role }),
+    });
+  },
+});
 
 /** Stable environment kinds supported by the Cloudflare connector. */
 export const stableEnvKinds = ["dev", "prod"] as const;
@@ -133,22 +183,6 @@ export function parseEnvironment(name: string): Env {
 export function envName(env: Env): string {
   return env.kind === "preview" ? env.id : env.kind;
 }
-
-/** Output schema constructors re-exported for component authors. */
-export { h };
-
-export type {
-  /** Semantic role attached to a published output. */
-  OutputRole,
-  /** Named child schemas accepted by an object schema. */
-  SchemaShape,
-  /** String output schema. */
-  StringSchema,
-  /** URL output schema. */
-  UrlSchema,
-  /** Metadata accepted when defining a URL output schema. */
-  UrlSchemaOptions,
-};
 
 function reference<Kind extends InputKind>(
   kind: Kind,
