@@ -312,9 +312,11 @@ async function importNativeDefinition(
     ["--import", "tsx", "--input-type=module", "--eval", script, moduleUrl],
     rendererPackageRoot,
   );
-  const definition: unknown = JSON.parse(
+  const parsed: unknown = JSON.parse(
     encoded.trim().split("\n").at(-1) ?? "null",
   );
+  const definition =
+    isRecord(parsed) && isRecord(parsed.default) ? parsed.default : parsed;
   if (!isRecord(definition)) {
     throw new Error(`${component.name} henosis.ts must default-export a Worker definition`);
   }
