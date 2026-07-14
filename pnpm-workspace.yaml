@@ -1,6 +1,13 @@
 packages:
-  - "packages/*"
+  - "packages/core"
+  - "packages/platform-cloudflare"
+  - "packages/platform-k8s"
+  - "packages/platform-supabase"
+  - "examples/benchmark"
 overrides:
   "@henosis/core": "workspace:*"
+  "@henosis/platform-cloudflare": "workspace:*"
+  "@henosis/platform-k8s": "workspace:*"
+  "@henosis/platform-supabase": "workspace:*"
 allowBuilds:
   esbuild: true

@@ -3,18 +3,18 @@ import path from "node:path";
 import ts from "typescript";
 
 const fixture = path.resolve(
-  process.argv[2] ?? "packages/platform-mock/test/hover.ts",
+  process.argv[2] ?? "examples/benchmark/src/backend.ts",
 );
+const token = process.argv[3] ?? "inputs";
 const source = readFileSync(fixture, "utf8");
-const marker = source.indexOf("// HOVER_FIXTURE: params");
-if (marker === -1) throw new Error("Hover marker was not found");
-const position = source.lastIndexOf("params", marker);
-if (position === -1) throw new Error("params token was not found before marker");
+const marker = source.indexOf(`// HOVER_FIXTURE: ${token}`);
+if (marker === -1) throw new Error(`Hover marker for ${token} was not found`);
+const position = source.lastIndexOf(token, marker);
+if (position === -1) throw new Error(`${token} token was not found before marker`);
 
-const versions = new Map([[fixture, "0"]]);
 const host = {
   getScriptFileNames: () => [fixture],
-  getScriptVersion: (fileName) => versions.get(fileName) ?? "0",
+  getScriptVersion: () => "0",
   getScriptSnapshot: (fileName) => {
     if (!ts.sys.fileExists(fileName)) return undefined;
     return ts.ScriptSnapshot.fromString(ts.sys.readFile(fileName) ?? "");

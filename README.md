@@ -1,24 +1,23 @@
-# Henosis platform
+# Henosis TypeScript authoring SDK
 
-This repository is the pnpm monorepo scaffold for the Henosis PoC platform packages.
+This repository implements the D26 authoring boundary. Components are synchronous pure desire
+functions: declared inputs in, complete resources and outputs out. Bundling and Rust isolate
+execution live elsewhere.
 
-- `packages/core` publishes `@henosis/core`: the D23 transactional record seam, typed component definitions, environment grammar, definition-identity refs, world resolution, validation, and resolved-record projection.
-- `packages/platform-mock` publishes `@henosis/platform-mock`: the zero-capability test/live-transition platform, including the marked v1 callback adapter.
-- `packages/platform-k8s` publishes `@henosis/platform-k8s`: namespace/service capabilities and deterministic Kubernetes YAML for Deployment, Service, HPA, PDB, and Namespace records.
-- `packages/renderer` publishes `@henosis/renderer`: manifest rendering plus the widened blocking gate matrix and its dev-only kill switch.
+- `packages/core` — `defineComponent`, `defineResource`, typed input/output declarations, total
+  resource emission, canonical serialization, the host protocol implementation, and an in-process
+  fake host.
+- `packages/platform-cloudflare` — typed Worker, Tunnel, and Route resource kinds.
+- `packages/platform-k8s` — `k8s/object@1` passthrough plus optional Deployment/Service sugar.
+- `packages/platform-supabase` — owned schema resources and native SQL migration references.
+- `examples/benchmark` — multiple components in one ordinary TypeScript package, including the
+  backend/frontend/Supabase/tunnel and two-service benchmark shapes.
 
-Use Node >=22. Enable pnpm through Corepack:
+The Rust-side contract is specified in [HOST-PROTOCOL.md](./HOST-PROTOCOL.md).
 
 ```sh
 corepack enable
 pnpm install
-pnpm -r build
+pnpm build
+pnpm test
 ```
-
-## Resolution mechanics
-
-Service workspaces declare `@henosis/platform-mock` and sibling `@henosis/*` dependencies using pnpm git dependencies with path selectors, for example `github:org/repo#path:subdir`.
-
-For local development, these dependencies resolve to the current HEAD of each referenced repo. The renderer assembles a temporary workspace and generates pnpm overrides to pin every `@henosis/*` package to the exact git commit selected by a manifest entry, for example `github:org/repo#<sha>&path:subdir`.
-
-That lets any component package be pinned to an arbitrary git ref from the manifest. The invariant is that the renderer's generated overrides fully control which version of every component the assembled workspace resolves to.

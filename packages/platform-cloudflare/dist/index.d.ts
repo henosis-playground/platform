@@ -1,115 +1,56 @@
-declare const schemaTypeBrand: unique symbol;
-/** Semantic role attached to a published output. */
-export type OutputRole = "ui";
-/** Metadata accepted when defining a URL output schema. */
-export interface UrlSchemaOptions {
-    /** Marks the URL as a user-facing UI entrypoint. */
-    readonly role: OutputRole;
+import { type BuildContext, type EmittedResource } from "@henosis/core";
+export interface SourceRef {
+    /** Repository-relative entry module bundled with the component closure. */
+    readonly entry: string;
+    /** Optional repository-relative static assets directory. */
+    readonly assets?: string;
 }
-/** A runtime output schema carrying its inferred TypeScript value. */
-export interface Schema<Value> {
-    /** Optional semantic role for downstream output discovery. */
-    readonly role?: OutputRole;
-    readonly [schemaTypeBrand]?: Value;
+export interface WorkerBody {
+    readonly source: SourceRef;
+    readonly compatibilityDate?: string;
+    readonly vars?: Readonly<Record<string, string | number | boolean>>;
 }
-/** A schema for arbitrary strings. */
-export type StringSchema = Schema<string> & {
-    readonly kind: "string";
+export declare const workerOutputs: {
+    readonly url: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly workerName: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly deploymentId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly versionId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 };
-/** A schema for absolute HTTP or HTTPS URLs. */
-export type UrlSchema = Schema<string> & {
-    readonly kind: "url";
-};
-/** Named child schemas accepted by an object schema. */
-export type SchemaShape = Readonly<Record<string, Schema<unknown>>>;
-/** A schema for one named object shape. */
-export interface ObjectSchema<Shape extends SchemaShape> extends Schema<unknown> {
-    readonly kind: "object";
-    readonly shape: Shape;
-}
-/** Public output-schema construction vocabulary. */
-export interface SchemaBuilder {
-    /** Defines an object schema. */
-    object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
-    /** Defines a string schema. */
-    string(): StringSchema;
-    /** Defines an HTTP/HTTPS URL schema with optional output metadata. */
-    url(options?: UrlSchemaOptions): UrlSchema;
-}
-/** Constructors for Cloudflare component output contracts. */
-export declare const h: SchemaBuilder;
-/** Stable environment kinds supported by the Cloudflare connector. */
-export declare const stableEnvKinds: readonly ["dev", "prod"];
-/** Stable environment kind supported by the Cloudflare connector. */
-export type StableEnvKind = (typeof stableEnvKinds)[number];
-/** Cloudflare environment, including an id-carrying preview. */
-export type Env = {
-    readonly kind: StableEnvKind;
-} | {
-    readonly kind: "preview";
-    readonly id: string;
-};
-/** Runtime binding treatment applied to a referenced producer output. */
-export type InputKind = "string" | "url" | "secret";
-/** A typed reference to one declared output of another component. */
-export interface OutputReference<Value, Kind extends InputKind> {
-    /** Binding treatment used by the Cloudflare connector. */
-    readonly kind: Kind;
-    /** Declared producer component. */
-    readonly component: string;
-    /** Declared producer output property. */
-    readonly output: string;
-    /** Compile-time value carried by this reference. */
-    readonly __value?: Value;
-}
-/** Output schemas that can feed a Cloudflare Worker variable. */
-export type VariableOutputSchema = StringSchema | UrlSchema;
-/** Flat declared output contract for a referenced component. */
-export type VariableOutputShape = Readonly<Record<string, VariableOutputSchema>>;
-/** Typed output references derived from a declared producer contract. */
-export type DeclaredOutputs<Shape extends VariableOutputShape> = {
-    readonly [Key in keyof Shape]: Shape[Key] extends UrlSchema ? OutputReference<string, "url"> : OutputReference<string, "string">;
-};
-/** Worker variables keyed by their exact Wrangler binding names. */
-export type WorkerVars = Readonly<Record<string, OutputReference<string, InputKind>>>;
-/** Author-facing Worker definition. */
-export interface WorkerSpec<Vars extends WorkerVars> {
-    /** Connector-owned outputs published after a successful deployment. */
-    readonly outputs: typeof workerOutputs;
-    /** Runtime variables populated from typed upstream outputs. */
-    readonly vars?: Vars;
-}
-/** Serializable Worker definition consumed by Henosis authoring. */
-export interface WorkerDefinition<Vars extends WorkerVars> {
-    /** Connector-owned outputs published after a successful deployment. */
-    readonly outputs: typeof workerOutputs;
-    /** Runtime variables in the deployed connector's input-slot format. */
-    readonly inputs?: Vars;
-    /** Exact environment kinds accepted by the deployed connector. */
-    readonly environments: readonly ["dev", "prod", "preview"];
-}
-/** Static outputs published by every Cloudflare Worker component. */
-export declare const workerOutputs: ObjectSchema<{
-    url: UrlSchema;
-    workerName: StringSchema;
-    deploymentId: StringSchema;
-    versionId: StringSchema;
-    claimUrl: UrlSchema;
+export declare const worker: import("@henosis/core").ResourceDefinition<WorkerBody, {
+    readonly url: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly workerName: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly deploymentId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly versionId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 }>;
-/**
- * Declares another component's output contract and returns completed typed refs.
- *
- * This is the hand-declared bridge until registry-generated declarations can be
- * imported directly from producer packages.
- */
-export declare function declareOutputs<Shape extends VariableOutputShape>(component: string, outputs: ObjectSchema<Shape>): DeclaredOutputs<Shape>;
-/** Marks a referenced string output for secret binding at the target boundary. */
-export declare function secret(output: OutputReference<string, "string">): OutputReference<string, "secret">;
-/** Defines one immutable Worker spec for separate per-repository execution. */
-export declare function defineWorker<const Vars extends WorkerVars>(spec: WorkerSpec<Vars>): WorkerDefinition<Vars>;
-/** Parses the exact environment grammar accepted by the Cloudflare connector. */
-export declare function parseEnvironment(name: string): Env;
-/** Formats a Cloudflare environment canonically. */
-export declare function envName(env: Env): string;
-export {};
+export interface TunnelBody {
+    readonly origin: {
+        readonly host: string;
+        readonly port: number;
+    };
+}
+export declare const tunnelOutputs: {
+    readonly tunnelId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly tunnelName: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly privateHostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly tokenRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+};
+export declare const tunnel: import("@henosis/core").ResourceDefinition<TunnelBody, {
+    readonly tunnelId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly tunnelName: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly privateHostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly tokenRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+}>;
+export interface RouteBody {
+    readonly pattern: string;
+    readonly zone: string;
+    readonly workerName: string;
+}
+export declare const routeOutputs: {
+    readonly hostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+};
+export declare const route: import("@henosis/core").ResourceDefinition<RouteBody, {
+    readonly hostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+}>;
+/** Emit a Worker while retaining its precise output-handle type. */
+export declare function emitWorker(context: BuildContext, name: string, body: WorkerBody): EmittedResource<typeof workerOutputs>;
 //# sourceMappingURL=index.d.ts.map

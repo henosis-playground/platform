@@ -1,109 +1,39 @@
-declare const schemaTypeBrand: unique symbol;
-declare const secretReferenceBrand: unique symbol;
-/** A reference to secret material held at the trusted target boundary. */
-export type SecretReference = string & {
-    readonly [secretReferenceBrand]: "secret-reference";
-};
-/** A runtime output schema carrying its inferred TypeScript value. */
-export interface Schema<Value> {
-    readonly [schemaTypeBrand]?: Value;
+export type AnonymousAccess = "none" | "read";
+/** Native SQL remains in repository files; the bundle records content identity, not wrapped SQL. */
+export interface MigrationRef {
+    readonly id: string;
+    readonly path: string;
+    readonly sha256: `sha256:${string}`;
 }
-/** A schema for arbitrary strings. */
-export type StringSchema = Schema<string> & {
-    readonly kind: "string";
-};
-/** A schema for absolute HTTP or HTTPS URLs. */
-export type UrlSchema = Schema<string> & {
-    readonly kind: "url";
-};
-/** A schema for a non-plaintext secret reference. */
-export type SecretReferenceSchema = Schema<SecretReference> & {
-    readonly kind: "secret-ref";
-};
-/** Named child schemas accepted by an object schema. */
-export type SchemaShape = Readonly<Record<string, Schema<unknown>>>;
-/** A schema for one named object shape. */
-export interface ObjectSchema<Shape extends SchemaShape> extends Schema<unknown> {
-    readonly kind: "object";
-    readonly shape: Shape;
-}
-/** Public output-schema construction vocabulary. */
-export interface SchemaBuilder {
-    object<Shape extends SchemaShape>(shape: Shape): ObjectSchema<Shape>;
-    string(): StringSchema;
-    url(): UrlSchema;
-    secretRef(): SecretReferenceSchema;
-}
-/** Constructors for Supabase component output contracts. */
-export declare const h: SchemaBuilder;
-/** Input treatment derived from the producer output schema. */
-export type InputKind = "string" | "url" | "secret";
-/** A typed reference to one declared output of another component. */
-export interface OutputReference<Value, Kind extends InputKind> {
-    readonly kind: Kind;
-    readonly component: string;
-    readonly output: string;
-    readonly __value?: Value;
-}
-/** Output schemas that can feed a migration input setting. */
-export type InputOutputSchema = StringSchema | UrlSchema | SecretReferenceSchema;
-/** Flat declared output contract for a referenced component. */
-export type InputOutputShape = Readonly<Record<string, InputOutputSchema>>;
-/** Typed output references derived from a declared producer contract. */
-export type DeclaredOutputs<Shape extends InputOutputShape> = {
-    readonly [Key in keyof Shape]: Shape[Key] extends UrlSchema ? OutputReference<string, "url"> : Shape[Key] extends SecretReferenceSchema ? OutputReference<SecretReference, "secret"> : OutputReference<string, "string">;
-};
-/** Anonymous PostgREST access implemented by the deployed connector. */
-export type AnonAccess = "none" | "read";
-/** JSON value accepted as a fallback for an absent producer output. */
-export type JsonValue = null | boolean | number | string | readonly JsonValue[] | {
-    readonly [key: string]: JsonValue;
-};
-/** One typed producer output with an optional connector-supported fallback. */
-export type MigrationInput = OutputReference<unknown, InputKind> | {
-    readonly from: OutputReference<unknown, InputKind>;
-    readonly default: JsonValue;
-};
-/** Per-migration transaction-local settings sourced from typed outputs. */
-export type MigrationInputs = Readonly<Record<string, Readonly<Record<string, MigrationInput>>>>;
-/** Author-facing database definition. */
-export interface DatabaseSpec<Inputs extends MigrationInputs> {
-    /** Connector-owned outputs published after successful reconciliation. */
-    readonly outputs: typeof databaseOutputs;
-    /** Repository-relative directory containing native SQL migrations. */
-    readonly migrationsDir: string;
-    /** Stable connector-owned PostgreSQL schema and resource identity. */
+export interface SchemaBody {
+    readonly stack: "local";
+    readonly project: "henosis-local";
+    readonly database: "postgres";
     readonly schema: string;
-    /** PostgREST exposure and anonymous grant policy. */
+    readonly migrations: readonly MigrationRef[];
     readonly api: {
         readonly expose: boolean;
-        readonly anonAccess: AnonAccess;
+        readonly anonAccess: AnonymousAccess;
     };
-    /** Optional typed values exposed to individual migrations. */
-    readonly migrationInputs?: Inputs;
 }
-/** Serializable definition consumed by Henosis inspection. */
-export interface DatabaseDefinition<Inputs extends MigrationInputs> {
-    readonly kind: "supabase.database";
-    readonly outputs: typeof databaseOutputs;
-    readonly migrationsDir: string;
-    readonly schema: string;
-    readonly api: {
-        readonly expose: boolean;
-        readonly anonAccess: AnonAccess;
-    };
-    readonly migrationInputs?: Inputs;
-    readonly environments: readonly ["dev", "prod", "preview"];
-}
-/** Fixed public outputs used by the current Supabase connector subset. */
-export declare const databaseOutputs: ObjectSchema<{
-    restUrl: UrlSchema;
-    schema: StringSchema;
-    anonKeyRef: SecretReferenceSchema;
+export declare const schemaOutputs: {
+    readonly project: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly database: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly schema: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly apiUrl: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly restUrl: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly databaseUrlRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly anonKeyRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+};
+export declare const schema: import("@henosis/core").ResourceDefinition<SchemaBody, {
+    readonly project: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly database: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly schema: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly apiUrl: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly restUrl: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly databaseUrlRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
+    readonly anonKeyRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 }>;
-/** Declares another component's output contract and returns typed refs. */
-export declare function declareOutputs<Shape extends InputOutputShape>(component: string, outputs: ObjectSchema<Shape>): DeclaredOutputs<Shape>;
-/** Defines one immutable Supabase database for separate repository execution. */
-export declare function defineDatabase<const Inputs extends MigrationInputs = MigrationInputs>(spec: DatabaseSpec<Inputs>): DatabaseDefinition<Inputs>;
-export {};
+/** Create a checked native-file migration reference. */
+export declare function migration(id: string, path: string, sha256: `sha256:${string}`): MigrationRef;
 //# sourceMappingURL=index.d.ts.map

@@ -1,0 +1,13 @@
+{
+  "name": "@henosis/example-benchmark",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "dependencies": {
+    "@henosis/core": "workspace:*",
+    "@henosis/platform-cloudflare": "workspace:*",
+    "@henosis/platform-k8s": "workspace:*",
+    "@henosis/platform-supabase": "workspace:*"
+  }
+}

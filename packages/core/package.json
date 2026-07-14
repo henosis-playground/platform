@@ -2,24 +2,23 @@
   "name": "@henosis/core",
   "version": "0.0.0",
   "type": "module",
-  "main": "./dist/src/index.js",
-  "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./testing": {
+      "types": "./dist/src/testing.d.ts",
+      "default": "./dist/src/testing.js"
     }
   },
-  "files": [
-    "dist",
-    "src"
-  ],
+  "files": ["dist", "src"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run test/core.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "vitest": "^4.0.0"
+    "vitest": "4.1.10"
   }
 }

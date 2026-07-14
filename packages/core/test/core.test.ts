@@ -1,650 +1,200 @@
 import { describe, expect, it } from "vitest";
 import {
-  PipelineError,
-  definePlatform,
-  evaluateWorld,
-  getComponentDefinition,
-  h,
-  inspectWorldPlatform,
-  isLegacyPreviewEnvironmentName,
-  isRef,
-  parseEnvironmentName,
-  refOutputPath,
-  refSourceDefinition,
-  representativePreviewName,
-  typeIdFromUuid,
-  uuidFromTypeId,
-  type BuildContext,
-  type ComponentModule,
-  type ContextOutcome,
-  type DeferredJsonValue,
-  type Environment,
-  type ImportedComponent,
-  type ObjectSchema,
-  type OutputRole,
-  type RecordSink,
-  type Ref,
-  type SchemaShape,
-  type UrlSchemaOptions,
-  type WorldPlan,
+  AuthoringError,
+  canonicalStringify,
+  defineComponent,
+  defineResource,
+  input,
+  output,
+  value,
+  type JsonValue,
 } from "../src/index.js";
+import { FakeHost } from "../src/testing.js";
 
-const stableEnvKinds = ["dev", "prod"] as const;
-type StableKind = (typeof stableEnvKinds)[number];
-type TestEnv = Environment<StableKind>;
-type TestContext = BuildContext<TestEnv> & {
-  emit(value: DeferredJsonValue): void;
-};
+const producer = defineComponent({
+  name: "producer",
+  outputs: {
+    endpoint: output.observed(value.url()),
+    preview: output.optionalObserved(value.url()),
+  },
+  build: () => {
+    throw new Error("metadata-only fixture");
+  },
+});
 
-function origin(name: string, platformPath = "/platform/one"): ImportedComponent["origin"] {
-  return {
-    componentPackage: `@henosis/${name}`,
-    componentPath: `/components/${name}/src/index.ts`,
-    platformPath,
-  };
+const testResourceOutputs = {
+  endpoint: output.observed(value.url()),
+} as const;
+
+const testResource = defineResource<
+  { readonly message: JsonValue },
+  typeof testResourceOutputs
+>({
+  kind: "test/message@1",
+  outputs: testResourceOutputs,
+});
+
+function consumer() {
+  return defineComponent({
+    name: "consumer",
+    inputs: {
+      endpoint: input.required(producer.outputs.endpoint),
+      preview: input.optional(producer.outputs.preview),
+    },
+    outputs: {
+      label: output.static(value.string()),
+      endpoint: output.observed(value.url()),
+    },
+    build: (context, inputs) => {
+      context.emit(testResource.create("prefix", { message: "stable" }));
+      const endpoint = inputs.endpoint.value;
+      const message = inputs.preview.present
+        ? `${endpoint} -> ${inputs.preview.value}`
+        : endpoint;
+      const emitted = context.emit(testResource.create("final", { message }));
+      return { label: "consumer", endpoint: emitted.outputs.endpoint };
+    },
+  });
 }
 
-function plan(
-  components: Readonly<Record<string, ComponentModule<ObjectSchema<SchemaShape>>>>,
-  opts: {
-    env?: TestEnv;
-    changed?: readonly string[];
-    dependencies?: Readonly<Record<string, readonly string[]>>;
-  } = {},
-): WorldPlan<StableKind> {
-  return {
-    requestedEnv: opts.env ?? { kind: "dev" },
-    components: Object.entries(components).map(([name, component]) => ({
-      name,
-      component,
-      origin: origin(name),
-      image: { ref: `${name}-ref`, digest: `sha256:${name}` },
-    })),
-    dependencies: opts.dependencies ?? {},
-    changed: opts.changed ?? Object.keys(components),
-  };
-}
+describe("in-process host", () => {
+  it("evaluates fully and returns canonical total resources", () => {
+    const result = new FakeHost(consumer())
+      .available("endpoint", "https://api.example")
+      .absent("preview")
+      .run();
 
-describe("component definition and exact params", () => {
-  const platform = definePlatform({
-    identity: {
-      packageName: "@henosis/test-platform",
-      packageVersion: "1.0.0",
-      apiVersion: 2,
-    },
-    stableEnvKinds,
-    createContext: ({ env, image, records }): TestContext => ({
-      env,
-      image,
-      emit: (value) => records.write({ kind: "test", data: value }),
-    }),
-  });
-
-  it("exports output refs whose immutable source is the definition object", () => {
-    const component = platform.defineComponent({
-      outputs: h.object({
-        api: h.url(),
-        nested: h.object({ label: h.string() }),
-      }),
-      build: () => ({
-        api: "https://service.example",
-        nested: { label: "ready" },
-      }),
-    });
-
-    expect(Object.keys(component)).toEqual(["api", "nested"]);
-    expect(isRef(component.api)).toBe(true);
-    expect(refSourceDefinition(component.api)).toBe(getComponentDefinition(component));
-    expect(refOutputPath(component.nested.label)).toEqual(["nested", "label"]);
-  });
-
-  it("keeps UI role metadata on the named output schema", () => {
-    const role: OutputRole = "ui";
-    const options: UrlSchemaOptions = { role };
-    const component = platform.defineComponent({
-      outputs: h.object({ app: h.url(options), api: h.url() }),
-      build: () => ({
-        app: "https://service.example/app",
-        api: "https://service.example/api",
-      }),
-    });
-
-    const outputs = getComponentDefinition(component).outputs;
-    expect(outputs.shape.app).toMatchObject({ kind: "url", role: "ui" });
-    expect(outputs.shape.api).toEqual(
-      expect.not.objectContaining({ role: expect.anything() }),
-    );
-  });
-
-  it("widens inferred rows while selecting exactly one environment row", () => {
-    const component = platform.defineComponent({
-      outputs: h.object({ endpoint: h.url(), replicas: h.number() }),
-      params: {
-        dev: { host: "dev.example", replicas: 1 },
-        prod: { host: "prod.example", replicas: 3 },
-        preview: { host: "preview.example", replicas: 1 },
+    expect(result).toMatchObject({
+      status: "complete",
+      outputs: { label: "consumer" },
+      observedOutputs: {
+        endpoint: { resource: "test/message@1/final", output: "endpoint" },
       },
-      build: (ctx, params) => {
-        const row: { host: string; replicas: number } = params;
-        ctx.emit({ host: row.host });
-        return {
-          endpoint: `https://${row.host}`,
-          replicas: row.replicas,
-        };
-      },
+      reads: ["endpoint"],
     });
+    expect(result.resources.map((resource) => resource.canonical)).toEqual([
+      '{"message":"stable"}',
+      '{"message":"https://api.example"}',
+    ]);
+  });
 
-    expect(evaluateWorld(plan({ sample: component })).components.sample).toMatchObject({
-      outputs: { endpoint: "https://dev.example", replicas: 1 },
-      records: [{ kind: "test", data: { host: "dev.example" } }],
+  it("keeps the deterministic emitted prefix when blocked, then reruns", () => {
+    const host = new FakeHost(consumer()).blocked("endpoint").absent("preview");
+    const blocked = host.run();
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      blocked: { input: "endpoint", source: "producer.endpoint" },
+      reads: ["endpoint"],
+    });
+    expect(blocked.resources.map((resource) => resource.address)).toEqual([
+      "test/message@1/prefix",
+    ]);
+
+    const complete = host.available("endpoint", "https://api.example").run();
+    expect(complete.status).toBe("complete");
+    expect(complete.resources.map((resource) => resource.address)).toEqual([
+      "test/message@1/prefix",
+      "test/message@1/final",
+    ]);
+  });
+
+  it("branches on optional presence without reading or blocking", () => {
+    const absent = new FakeHost(consumer())
+      .available("endpoint", "https://api.example")
+      .absent("preview")
+      .run();
+    expect(absent.reads).toEqual(["endpoint"]);
+
+    const blocked = new FakeHost(consumer())
+      .available("endpoint", "https://api.example")
+      .blocked("preview")
+      .run();
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      blocked: { input: "preview", operation: "reading `.value`" },
+      reads: ["endpoint", "preview"],
     });
   });
 });
 
-describe("transactional lifecycle", () => {
-  it("seals successful sinks, rejects retained writes, and disposes exactly once", () => {
-    let retained: RecordSink | undefined;
-    const outcomes: ContextOutcome[] = [];
-    const platform = definePlatform({
-      identity: {
-        packageName: "@henosis/lifecycle",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds,
-      createContext: ({ env, image, records }): TestContext => {
-        retained = records;
-        return {
-          env,
-          image,
-          emit: (value) => records.write({ kind: "build", data: value }),
-        };
-      },
-      finishRecords: (_ctx, records) => {
-        records.write({ kind: "finish", data: { ok: true } });
-      },
-      dispose: (_ctx, outcome) => outcomes.push(outcome),
-    });
-    const component = platform.defineComponent({
-      outputs: h.object({ value: h.string() }),
-      build: (ctx) => {
-        ctx.emit({ value: "ready" });
-        return { value: "ready" };
+describe("author diagnostics", () => {
+  it("snapshots accidental handle insertion", () => {
+    const broken = defineComponent({
+      name: "broken",
+      inputs: { endpoint: input.required(producer.outputs.endpoint) },
+      outputs: { endpoint: output.observed(value.url()) },
+      build: (context, inputs) => {
+        const emitted = context.emit(testResource.create("bad", {
+          message: inputs.endpoint as unknown as JsonValue,
+        }));
+        return { endpoint: emitted.outputs.endpoint };
       },
     });
 
-    expect(evaluateWorld(plan({ sample: component })).components.sample?.records).toEqual([
-      { kind: "build", data: { value: "ready" } },
-      { kind: "finish", data: { ok: true } },
-    ]);
-    expect(outcomes).toEqual([{ status: "sealed" }]);
-    expect(() => retained?.write({ kind: "late", data: null })).toThrow(
-      "Record transaction is sealed",
-    );
-  });
-
-  it.each([
-    {
-      label: "build",
-      expectedStage: "build" as const,
-      buildValue: "throw" as const,
-      finishThrows: false,
-    },
-    {
-      label: "pending output validation",
-      expectedStage: "pending-output-validation" as const,
-      buildValue: "invalid" as const,
-      finishThrows: false,
-    },
-    {
-      label: "finish records",
-      expectedStage: "finish-records" as const,
-      buildValue: "valid" as const,
-      finishThrows: true,
-    },
-  ])("aborts and disposes exactly once after a $label failure", (testCase) => {
-    const outcomes: ContextOutcome[] = [];
-    let retained: RecordSink | undefined;
-    const platform = definePlatform({
-      identity: {
-        packageName: "@henosis/lifecycle",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds,
-      createContext: ({ env, image, records }): TestContext => {
-        retained = records;
-        return {
-          env,
-          image,
-          emit: (value) => records.write({ kind: "partial", data: value }),
-        };
-      },
-      finishRecords: () => {
-        if (testCase.finishThrows) throw new Error("finish exploded");
-      },
-      dispose: (_ctx, outcome) => outcomes.push(outcome),
-    });
-    const component = platform.defineComponent({
-      outputs: h.object({ value: h.string() }),
-      build: (ctx) => {
-        ctx.emit({ before: "failure" });
-        if (testCase.buildValue === "throw") throw new Error("build exploded");
-        return {
-          value: testCase.buildValue === "invalid" ? 42 : "ready",
-        } as never;
-      },
-    });
-
-    let caught: unknown;
-    try {
-      evaluateWorld(plan({ sample: component }));
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(PipelineError);
-    expect((caught as PipelineError).failure).toMatchObject({
-      stage: testCase.expectedStage,
-      component: "sample",
-    });
-    expect(outcomes).toEqual([
-      { status: "aborted", stage: testCase.expectedStage },
-    ]);
-    expect(() => retained?.write({ kind: "late", data: null })).toThrow(
-      "Record transaction is aborted",
-    );
-  });
-
-  it("preserves the primary failure when dispose also throws", () => {
-    const platform = definePlatform({
-      identity: {
-        packageName: "@henosis/lifecycle",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds,
-      createContext: ({ env, image }) => ({ env, image }),
-      dispose: () => {
-        throw new Error("dispose exploded");
-      },
-    });
-    const component = platform.defineComponent({
-      outputs: h.object({ value: h.string() }),
-      build: () => {
-        throw new Error("build exploded");
-      },
-    });
-
-    let caught: unknown;
-    try {
-      evaluateWorld(plan({ sample: component }));
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(PipelineError);
-    expect((caught as PipelineError).failure).toEqual({
-      stage: "build",
-      component: "sample",
-      message: "build exploded; dispose also failed: dispose exploded",
-    });
-  });
-
-  it("snapshots record payloads and outputs before sealed disposal", () => {
-    const payload = { nested: { value: "before" }, values: ["before"] };
-    const outputs = { nested: { value: "before" } };
-    const platform = definePlatform({
-      identity: {
-        packageName: "@henosis/lifecycle",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds,
-      createContext: ({ env, image, records }) => ({ env, image, records }),
-      dispose: (_ctx, outcome) => {
-        if (outcome.status === "sealed") {
-          payload.nested.value = "after-seal";
-          payload.values[0] = "after-seal";
-          outputs.nested.value = "after-seal";
-        }
-      },
-    });
-    const component = platform.defineComponent({
-      outputs: h.object({ nested: h.object({ value: h.string() }) }),
-      build: (ctx) => {
-        ctx.records.write({ kind: "payload", data: payload });
-        return outputs;
-      },
-    });
-
-    const result = evaluateWorld(
-      plan({
-        sample: component as unknown as ComponentModule<ObjectSchema<SchemaShape>>,
-      }),
-    ).components.sample;
-    expect(result?.outputs).toEqual({ nested: { value: "before" } });
-    expect(result?.records).toEqual([
+    expect(new FakeHost(broken).blocked("endpoint").run()).toMatchInlineSnapshot(`
       {
-        kind: "payload",
-        data: { nested: { value: "before" }, values: ["before"] },
-      },
-    ]);
-    expect(Object.isFrozen(result?.outputs)).toBe(true);
-    expect(Object.isFrozen(result?.records)).toBe(true);
-    expect(Object.isFrozen(result?.records[0]?.data)).toBe(true);
-    expect(Object.isFrozen(
-      (result?.records[0]?.data as { values: readonly string[] }).values,
-    )).toBe(true);
-  });
-
-  it("freezes resolved state before validators and projection", () => {
-    let projected = "";
-    const platform = definePlatform({
-      identity: {
-        packageName: "@henosis/lifecycle",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds,
-      createContext: ({ env, image, records }) => ({ env, image, records }),
-      validators: [
-        {
-          id: "mutation.probe",
-          validate: (world) => {
-            const component = world.components.sample;
-            const outputs = component?.outputs as {
-              nested: { value: string };
-            };
-            const record = component?.records[0]?.data as {
-              nested: { value: string };
-            };
-            expect(Reflect.set(outputs.nested, "value", "validator-mutated")).toBe(
-              false,
-            );
-            expect(Reflect.set(record.nested, "value", "validator-mutated")).toBe(
-              false,
-            );
-            return [];
-          },
+        "blocked": {
+          "code": "HENOSIS_BLOCKED",
+          "input": "endpoint",
+          "message": "blocked[HENOSIS_BLOCKED]: input "endpoint" from producer.endpoint is not available
+        |
+        = note: serializing resource test/message@1/bad.message requires its concrete value
+        = help: Henosis recorded this read and will re-run the component when the producer publishes it",
+          "operation": "serializing resource test/message@1/bad.message",
+          "source": "producer.endpoint",
         },
-      ],
-      project: ({ records }) => {
-        projected = JSON.stringify(records);
-        return [{ path: "records.json", contents: projected }];
-      },
-    });
-    const component = platform.defineComponent({
-      outputs: h.object({ nested: h.object({ value: h.string() }) }),
-      build: (ctx) => {
-        ctx.records.write({
-          kind: "payload",
-          data: { nested: { value: "before" } },
-        });
-        return { nested: { value: "before" } };
-      },
-    });
+        "protocolVersion": 1,
+        "reads": [
+          "endpoint",
+        ],
+        "resources": [],
+        "status": "blocked",
+      }
+    `);
 
-    const result = evaluateWorld(
-      plan({
-        sample: component as unknown as ComponentModule<ObjectSchema<SchemaShape>>,
-      }),
-    ).components.sample;
-    expect(result?.outputs).toEqual({ nested: { value: "before" } });
-    expect(projected).toContain('"value":"before"');
-    expect(projected).not.toContain("validator-mutated");
+    expect(() => new FakeHost(broken).available("endpoint", "https://api.example").run())
+      .toThrowErrorMatchingInlineSnapshot(`
+        [AuthoringError: error[HENOSIS_INPUT_HANDLE_SERIALIZED]: Input handle "endpoint" was placed into resource test/message@1/bad.message.
+          |
+          = help: Use inputs.endpoint.value. Resources are total and cannot contain handles.]
+      `);
+  });
+
+  it("rejects clock and randomness", () => {
+    const clock = defineComponent({
+      name: "clock",
+      outputs: { value: output.static(value.number()) },
+      build: () => ({ value: Date.now() }),
+    });
+    expect(() => new FakeHost(clock).run()).toThrow(AuthoringError);
+    expect(() => new FakeHost(clock).run()).toThrow("Date.now() is unavailable");
   });
 });
 
-describe("borrowing and core-owned resolution", () => {
-  const projected: Array<{ component: string; records: unknown }> = [];
-  const platform = definePlatform({
-    identity: {
-      packageName: "@henosis/borrow-platform",
-      packageVersion: "1.0.0",
-      apiVersion: 2,
-    },
-    stableEnvKinds,
-    createContext: ({ env, image, records }): TestContext => ({
-      env,
-      image,
-      emit: (value) => records.write({ kind: "test", data: value }),
-    }),
-    project: ({ componentName, records }) => {
-      projected.push({ component: componentName, records });
-      return [{ path: "records.json", contents: JSON.stringify(records) }];
-    },
-  });
+describe("under-specification monotonicity oracle", () => {
+  it("every availability subset emits a prefix subset of full evaluation", () => {
+    const full = new FakeHost(consumer())
+      .available("endpoint", "https://api.example")
+      .available("preview", "https://preview.example")
+      .run();
+    const fullCanonical = new Set(full.resources.map((resource) => `${resource.address}\0${resource.canonical}`));
 
-  function component(name: string, dependency?: Ref<string>) {
-    return platform.defineComponent({
-      outputs: h.object({ endpoint: h.url() }),
-      borrowForPreview: "dev",
-      params: {
-        dev: { suffix: "dev" },
-        prod: { suffix: "prod" },
-        preview: { suffix: "preview" },
-      },
-      build: (ctx, params) => {
-        ctx.emit({ dependency: dependency ?? "none" });
-        return {
-          endpoint: dependency ?? `https://${name}-${params.suffix}.example`,
-        };
-      },
-    });
-  }
-
-  it("never borrows a changed member or transitive reverse-dependent", () => {
-    projected.length = 0;
-    const serviceA = component("a");
-    const serviceB = component("b", serviceA.endpoint);
-    const serviceC = component("c");
-    const result = evaluateWorld(
-      plan(
-        { a: serviceA, b: serviceB, c: serviceC },
-        {
-          env: { kind: "preview", id: representativePreviewName },
-          changed: ["a"],
-          dependencies: { a: [], b: ["a"], c: [] },
-        },
-      ),
-    );
-
-    expect(result.components.a?.disposition).toEqual({ kind: "materialized" });
-    expect(result.components.b?.disposition).toEqual({ kind: "materialized" });
-    expect(result.components.c).toMatchObject({
-      effectiveEnv: { kind: "dev" },
-      disposition: {
-        kind: "borrowed",
-        from: "dev",
-        effectiveEnv: { kind: "dev" },
-      },
-      outputs: { endpoint: "https://c-dev.example" },
-      records: [],
-      artifacts: [],
-    });
-    expect(projected.map((entry) => entry.component)).toEqual(["a", "b"]);
-  });
-
-  it("resolves a definition-identity Ref in records before projection", () => {
-    projected.length = 0;
-    const producer = component("producer");
-    const consumer = component("consumer", producer.endpoint);
-    const result = evaluateWorld(
-      plan(
-        { producer, consumer },
-        { dependencies: { producer: [], consumer: ["producer"] } },
-      ),
-    );
-
-    expect(result.components.consumer?.records).toEqual([
-      {
-        kind: "test",
-        data: { dependency: "https://producer-dev.example" },
-      },
-    ]);
-    expect(result.components.consumer?.artifacts[0]?.contents).toContain(
-      "https://producer-dev.example",
-    );
-  });
-});
-
-describe("world validator canonicalization", () => {
-  it("sorts by help and deduplicates a canonical field tuple", () => {
-    const platform = definePlatform({
-      identity: {
-        packageName: "@henosis/validator-platform",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds,
-      createContext: ({ env, image }) => ({ env, image }),
-      validators: [
-        {
-          id: "canonical.probe",
-          validate: () => [
-            {
-              code: "canonical.issue",
-              message: "same message",
-              component: "sample",
-              help: "z-last",
-            },
-            {
-              component: "sample",
-              help: "z-last",
-              message: "same message",
-              code: "canonical.issue",
-            },
-            {
-              code: "canonical.issue",
-              message: "same message",
-              component: "sample",
-              help: "a-first",
-            },
-          ],
-        },
-      ],
-    });
-    const component = platform.defineComponent({
-      outputs: h.object({ value: h.string() }),
-      build: () => ({ value: "ok" }),
-    });
-
-    let caught: unknown;
-    try {
-      evaluateWorld(plan({ sample: component }));
-    } catch (error) {
-      caught = error;
+    for (let mask = 0; mask < 4; mask += 1) {
+      const host = new FakeHost(consumer());
+      mask & 1 ? host.available("endpoint", "https://api.example") : host.blocked("endpoint");
+      mask & 2 ? host.available("preview", "https://preview.example") : host.blocked("preview");
+      const partial = host.run();
+      for (const resource of partial.resources) {
+        expect(fullCanonical.has(`${resource.address}\0${resource.canonical}`)).toBe(true);
+      }
     }
-    expect(caught).toBeInstanceOf(PipelineError);
-    expect((caught as PipelineError).failure.issues?.map((issue) => issue.help))
-      .toEqual(["a-first", "z-last"]);
   });
 });
 
-describe("platform discovery and environment grammar", () => {
-  function platform(packageVersion: string, packageName = "@henosis/discovery") {
-    return definePlatform({
-      identity: { packageName, packageVersion, apiVersion: 2 },
-      stableEnvKinds,
-      createContext: ({ env, image }) => ({ env, image }),
-    });
-  }
-
-  function imported(
-    name: string,
-    component: ComponentModule<ObjectSchema<SchemaShape>>,
-    platformPath: string,
-  ): ImportedComponent {
-    return { name, component, origin: origin(name, platformPath) };
-  }
-
-  it("discovers a frozen descriptor from defaults and diagnoses duplicates/mixes", () => {
-    const first = platform("1.0.0");
-    const duplicate = platform("1.0.0");
-    const mixed = platform("2.0.0");
-    const make = (bound: typeof first) =>
-      bound.defineComponent({
-        outputs: h.object({ value: h.string() }),
-        build: () => ({ value: "ok" }),
-      });
-
-    expect(
-      inspectWorldPlatform([imported("a", make(first), "/p/one")]),
-    ).toEqual({
-      identity: {
-        packageName: "@henosis/discovery",
-        packageVersion: "1.0.0",
-        apiVersion: 2,
-      },
-      stableEnvKinds: ["dev", "prod"],
-    });
-    expect(() =>
-      inspectWorldPlatform([
-        imported("a", make(first), "/p/one"),
-        imported("b", make(duplicate), "/p/two"),
-      ]),
-    ).toThrow(/duplicate platform installation.*\/p\/one.*\/p\/two/);
-    expect(() =>
-      inspectWorldPlatform([
-        imported("a", make(first), "/p/one"),
-        imported("b", make(mixed), "/p/two"),
-      ]),
-    ).toThrow(
-      /mixed platforms: component a carries @henosis\/discovery@1\.0\.0.*component b carries @henosis\/discovery@2\.0\.0/,
+describe("canonical serialization", () => {
+  it("sorts keys recursively and preserves array order", () => {
+    expect(canonicalStringify({ z: 1, a: { y: 2, b: [3, 1] } })).toBe(
+      '{"a":{"b":[3,1],"y":2},"z":1}',
     );
-  });
-
-  it("strictly parses TypeIDs, retains only the marked legacy shim, and roundtrips the representative", () => {
-    const uuid = "728b0fd3-0c7f-4202-843f-f78b16bc3d04";
-    expect(typeIdFromUuid("preview", uuid)).toBe(representativePreviewName);
-    expect(uuidFromTypeId(representativePreviewName, "preview")).toBe(uuid);
-    expect(parseEnvironmentName(stableEnvKinds, representativePreviewName)).toEqual({
-      kind: "preview",
-      id: representativePreviewName,
-    });
-    expect(isLegacyPreviewEnvironmentName("preview-legacy-42")).toBe(true);
-    expect(parseEnvironmentName(stableEnvKinds, "preview-legacy-42")).toEqual({
-      kind: "preview",
-      id: "preview-legacy-42",
-    });
-    expect(() => parseEnvironmentName(stableEnvKinds, "staging")).toThrow(
-      "Unknown environment",
-    );
-    expect(() =>
-      parseEnvironmentName(stableEnvKinds, representativePreviewName.toUpperCase()),
-    ).toThrow("Unknown environment");
-  });
-
-  it("matches official TypeID vectors in the supported prefixed subset", () => {
-    const vectors = [
-      {
-        typeId: "prefix_0123456789abcdefghjkmnpqrs",
-        prefix: "prefix",
-        uuid: "0110c853-1d09-52d8-d73e-1194e95b5f19",
-      },
-      {
-        typeId: "prefix_01h455vb4pex5vsknk084sn02q",
-        prefix: "prefix",
-        uuid: "01890a5d-ac96-774b-bcce-b302099a8057",
-      },
-      {
-        typeId: "pre_fix_00000000000000000000000000",
-        prefix: "pre_fix",
-        uuid: "00000000-0000-0000-0000-000000000000",
-      },
-    ] as const;
-    for (const vector of vectors) {
-      expect(typeIdFromUuid(vector.prefix, vector.uuid)).toBe(vector.typeId);
-      expect(uuidFromTypeId(vector.typeId, vector.prefix)).toBe(vector.uuid);
-    }
-
-    expect(() => typeIdFromUuid("pre1", vectors[0].uuid)).toThrow(
-      "Invalid TypeID prefix",
-    );
-    expect(() => typeIdFromUuid("", vectors[0].uuid)).toThrow(
-      "Invalid TypeID prefix",
-    );
-    expect(() =>
-      uuidFromTypeId("prefix_8zzzzzzzzzzzzzzzzzzzzzzzzz", "prefix"),
-    ).toThrow("Invalid canonical TypeID");
   });
 });
