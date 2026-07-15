@@ -3,6 +3,7 @@ import {
   AuthoringError,
   Blocked,
   canonicalStringify,
+  createBundle,
   defineComponent,
   defineResource,
   input,
@@ -59,6 +60,30 @@ function consumer() {
 }
 
 describe("in-process host", () => {
+  it("publishes config schemas and applies defaults as ordinary available cells", () => {
+    const configured = defineComponent({
+      name: "configured",
+      inputs: {
+        region: input.config(value.string()),
+        replicas: input.config(value.number(), { default: 1 }),
+      },
+      outputs: { description: output.static(value.string()) },
+      build: (_context, inputs) => ({
+        description: `${inputs.region.value}:${inputs.replicas.value}`,
+      }),
+    });
+
+    expect(createBundle(configured).component.inputs).toEqual({
+      region: { source: "config", schema: { kind: "string" } },
+      replicas: { source: "config", schema: { kind: "number" }, default: 1 },
+    });
+    expect(new FakeHost(configured).available("region", "eu-west-1").run()).toMatchObject({
+      status: "complete",
+      outputs: { description: "eu-west-1:1" },
+      reads: ["region", "replicas"],
+    });
+  });
+
   it("evaluates fully and returns canonical total resources", () => {
     const result = new FakeHost(consumer())
       .available("endpoint", "https://api.example")

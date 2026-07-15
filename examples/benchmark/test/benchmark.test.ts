@@ -3,6 +3,7 @@ import { FakeHost } from "@henosis/core/testing";
 import backend from "../src/backend.js";
 import database from "../src/database.js";
 import tunnel from "../src/tunnel.js";
+import servicePair from "../src/k8s-services.js";
 
 describe("benchmark components", () => {
   it("initializes and evaluates database, tunnel, and backend through FakeHost", () => {
@@ -35,5 +36,10 @@ describe("benchmark components", () => {
       },
       reads: ["databaseUrl", "tunnelHost"],
     });
+
+    const servicePairResult = new FakeHost(servicePair).available("replicas", 3).run();
+    const deployments = servicePairResult.resources.filter((resource) => resource.address.endsWith("-deployment"));
+    expect(deployments).toHaveLength(2);
+    expect(deployments.every((resource) => resource.canonical.includes('"replicas":3'))).toBe(true);
   });
 });

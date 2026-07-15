@@ -1,5 +1,6 @@
 import {
   executeComponent,
+  getComponentDefinition,
   type ComponentModule,
   type EvaluationResult,
   type EvaluationSnapshot,
@@ -35,9 +36,15 @@ export class FakeHost<
   }
 
   run(): EvaluationResult {
+    const cells = new Map(this.cells);
+    for (const [name, declaration] of Object.entries(getComponentDefinition(this.component).inputs)) {
+      if (!cells.has(name) && declaration.kind === "config" && declaration.default !== undefined) {
+        cells.set(name, { state: "available", value: declaration.default as JsonValue });
+      }
+    }
     const snapshot: EvaluationSnapshot = {
       protocolVersion: 1,
-      inputs: Object.freeze(Object.fromEntries(this.cells)),
+      inputs: Object.freeze(Object.fromEntries(cells)),
     };
     let stickyBlocked: HostBlockedDetail | undefined;
     const hostGlobal = globalThis as typeof globalThis & {
