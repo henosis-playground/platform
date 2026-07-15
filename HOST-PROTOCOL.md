@@ -38,6 +38,11 @@ data. Functions appear only at `evaluate`; metadata contains no executable value
 `component.outputs` maps output names to `{ availability, optional, schema }`. The host uses this
 metadata to construct snapshots and validate graph wiring before execution.
 
+Component names and resource logical names match `^[a-z][a-z0-9_-]{0,62}$` because they flow into
+target identifiers. Input and output names are TypeScript API surface and match
+`^[A-Za-z][A-Za-z0-9]{0,62}$`; idiomatic camelCase is recommended. Source coordinates apply the
+component rule to `component` and the API rule to `output`.
+
 ## 3. Snapshot injection
 
 ```json
@@ -195,8 +200,31 @@ relevant value becomes available. It MUST NOT append later resources to the old 
 replaces that component's interpretation atomically.
 
 A `Blocked` signal is control flow, not component failure. The host SHOULD detect it by the returned
-`status`, not by parsing exception text. All other uncaught exceptions are evaluation failures. The
-SDK formats author errors as:
+`status`, not by parsing exception text. All other uncaught exceptions are evaluation failures.
+
+Before invoking the bundle, the host MUST install a synchronous, non-configurable global function
+named `__henosis_mark_blocked(detail)`. Its payload is exactly the blocked detail without the wire
+`code` field:
+
+```ts
+interface HostBlockedDetail {
+  input: string;
+  source: string;
+  operation: string;
+  message: string;
+}
+```
+
+Immediately before throwing `Blocked`, the SDK MUST call this function when it is present. This
+applies both when a blocked input's `.value` getter is read and when serialization encounters a
+blocked input handle. The host MUST retain the first detail reported during an evaluation. If author
+code catches and swallows the exception and returns `complete`, the host MUST override that result to
+`blocked`, discard all returned resources, and include `detail.input` in the sorted `reads` set. If
+the SDK returns `blocked` normally, its `input`, `source`, and `operation` MUST agree with the sticky
+host detail or evaluation fails closed. The function may be absent in non-isolate SDK use; throwing
+the typed `Blocked` signal remains the fallback behavior.
+
+The SDK formats author errors as:
 
 ```text
 error[HENOSIS_CODE]: what was wrong

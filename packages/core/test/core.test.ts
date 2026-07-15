@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AuthoringError,
+  Blocked,
   canonicalStringify,
   defineComponent,
   defineResource,
@@ -98,6 +99,30 @@ describe("in-process host", () => {
     ]);
   });
 
+  it("remains blocked when component code catches and swallows Blocked", () => {
+    const swallowing = defineComponent({
+      name: "swallowing",
+      inputs: { endpoint: input.required(producer.outputs.endpoint) },
+      outputs: { fabricatedValue: output.static(value.string()) },
+      build: (context, inputs) => {
+        try {
+          inputs.endpoint.value;
+        } catch (error) {
+          if (!(error instanceof Blocked)) throw error;
+        }
+        context.emit(testResource.create("fabricated", { message: "not actually complete" }));
+        return { fabricatedValue: "fake" };
+      },
+    });
+
+    expect(new FakeHost(swallowing).blocked("endpoint").run()).toMatchObject({
+      status: "blocked",
+      resources: [],
+      blocked: { input: "endpoint", source: "producer.endpoint" },
+      reads: ["endpoint"],
+    });
+  });
+
   it("branches on optional presence without reading or blocking", () => {
     const absent = new FakeHost(consumer())
       .available("endpoint", "https://api.example")
@@ -118,6 +143,20 @@ describe("in-process host", () => {
 });
 
 describe("author diagnostics", () => {
+  it("explains the separate target and TypeScript API naming rules", () => {
+    expect(() => defineComponent({
+      name: "BadComponent",
+      outputs: {},
+      build: () => ({}),
+    })).toThrow("Resource logical names and component names flow into target identifiers");
+
+    expect(() => defineComponent({
+      name: "valid_component",
+      outputs: { "worker-name": output.static(value.string()) },
+      build: () => ({ "worker-name": "worker" }),
+    })).toThrow("Input and output names are TypeScript API surface");
+  });
+
   it("snapshots accidental handle insertion", () => {
     const broken = defineComponent({
       name: "broken",
@@ -158,6 +197,34 @@ describe("author diagnostics", () => {
           |
           = help: Use inputs.endpoint.value. Resources are total and cannot contain handles.]
       `);
+  });
+
+  it("marks blocked before blocked-handle serialization throws", () => {
+    const swallowing = defineComponent({
+      name: "serialization_swallowing",
+      inputs: { endpoint: input.required(producer.outputs.endpoint) },
+      outputs: { fabricatedValue: output.static(value.string()) },
+      build: (context, inputs) => {
+        try {
+          context.emit(testResource.create("bad", {
+            message: inputs.endpoint as unknown as JsonValue,
+          }));
+        } catch (error) {
+          if (!(error instanceof Blocked)) throw error;
+        }
+        return { fabricatedValue: "fake" };
+      },
+    });
+
+    expect(new FakeHost(swallowing).blocked("endpoint").run()).toMatchObject({
+      status: "blocked",
+      resources: [],
+      blocked: {
+        input: "endpoint",
+        operation: "serializing resource test/message@1/bad.message",
+      },
+      reads: ["endpoint"],
+    });
   });
 
   it("rejects clock and randomness", () => {

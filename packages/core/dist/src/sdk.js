@@ -53,17 +53,17 @@ export function defineResource(spec) {
         kind: spec.kind,
         outputs,
         create(name, body) {
-            assertName(name, "resource name");
+            assertTargetName(name, "resource name");
             return Object.freeze({ kind: spec.kind, name, body, outputs });
         },
     });
 }
 export function defineComponent(spec) {
-    assertName(spec.name, "component name");
+    assertTargetName(spec.name, "component name");
     const inputs = Object.freeze({ ...(spec.inputs ?? {}) });
     const outputs = freezeOutputs(spec.outputs);
     for (const [name, declaration] of Object.entries(inputs)) {
-        assertName(name, "input name");
+        assertApiName(name, "input name");
         if (!isOutputHandle(declaration.source)) {
             throw diagnostic("HENOSIS_INPUT_SOURCE", `Input ${quoted(name)} does not reference a component output.`, "Import the producer and use input.required(producer.outputs.<name>) or input.optional(...).");
         }
@@ -146,6 +146,12 @@ export class Blocked extends Error {
         return Object.freeze({ code: this.code, input: this.input, source: this.source, operation: this.operation, message: this.message });
     }
 }
+function throwBlocked(input, source, operation) {
+    const blocked = new Blocked(input, source, operation);
+    const marker = globalThis.__henosis_mark_blocked;
+    marker?.(Object.freeze({ input, source, operation, message: blocked.message }));
+    throw blocked;
+}
 // === CANONICALIZATION ===
 export function compareCodeUnits(left, right) { return left < right ? -1 : left > right ? 1 : 0; }
 export function canonicalStringify(input) { return JSON.stringify(canonicalize(input)); }
@@ -199,7 +205,7 @@ function materializeInputs(declarations, snapshot, reads) {
             get value() {
                 reads.add(name);
                 if (cell.state === "blocked")
-                    throw new Blocked(name, sourceLabel(declaration), "reading `.value`");
+                    throwBlocked(name, sourceLabel(declaration), "reading `.value`");
                 if (cell.state === "absent")
                     throw diagnostic("HENOSIS_ABSENT_INPUT_READ", `Optional input ${quoted(name)} is absent, but its .value was read.`, `Branch on inputs.${name}.present before reading inputs.${name}.value.`);
                 return cell.value;
@@ -256,7 +262,7 @@ function snapshotJson(candidate, location) {
             const details = current[inputValueSymbol];
             details.markRead();
             if (details.state === "blocked")
-                throw new Blocked(details.name, details.source, `serializing ${path}`);
+                throwBlocked(details.name, details.source, `serializing ${path}`);
             throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Input handle ${quoted(details.name)} was placed into ${path}.`, `Use inputs.${details.name}.value. Resources are total and cannot contain handles.`);
         }
         if (current === null || typeof current === "string" || typeof current === "boolean")
@@ -308,7 +314,7 @@ function metadata(definition) {
 }
 function freezeOutputs(outputs) {
     for (const [name, declaration] of Object.entries(outputs)) {
-        assertName(name, "output name");
+        assertApiName(name, "output name");
         if (declaration.availability !== "static" && declaration.availability !== "observed")
             throw diagnostic("HENOSIS_OUTPUT_AVAILABILITY", `Output ${quoted(name)} has invalid availability.`, "Use output.static(), output.observed(), or an optional form.");
     }
@@ -361,8 +367,10 @@ function isBinding(candidate) { return isRecord(candidate) && bindingSymbol in c
 function sourceLabel(declaration) { return `${declaration.source.component}.${declaration.source.output}`; }
 function assertKind(kind) { if (!/^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*@[1-9][0-9]*$/u.test(kind))
     throw diagnostic("HENOSIS_RESOURCE_KIND", `Invalid resource kind ${quoted(kind)}.`, "Use a versioned kind such as cloudflare/worker@1."); }
-function assertName(name, label) { if (!/^[a-z][a-z0-9_-]{0,62}$/u.test(name))
-    throw diagnostic("HENOSIS_LOGICAL_NAME", `Invalid ${label} ${quoted(name)}.`, "Use 1-63 lowercase letters, digits, underscores, or hyphens, beginning with a letter."); }
+function assertTargetName(name, label) { if (!/^[a-z][a-z0-9_-]{0,62}$/u.test(name))
+    throw diagnostic("HENOSIS_LOGICAL_NAME", `Invalid ${label} ${quoted(name)}.`, "Resource logical names and component names flow into target identifiers. Use 1-63 lowercase letters, digits, underscores, or hyphens, beginning with a letter."); }
+function assertApiName(name, label) { if (!/^[A-Za-z][A-Za-z0-9]{0,62}$/u.test(name))
+    throw diagnostic("HENOSIS_API_NAME", `Invalid ${label} ${quoted(name)}.`, "Input and output names are TypeScript API surface. Use 1-63 ASCII letters or digits, beginning with a letter; idiomatic camelCase is recommended."); }
 function diagnostic(code, summary, help) { return new AuthoringError(code, summary, help); }
 function quoted(value) { return JSON.stringify(value); }
 function jsonKind(input) { return input === null ? "null" : Array.isArray(input) ? "array" : typeof input; }

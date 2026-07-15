@@ -3,11 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": { "build": "tsc -p tsconfig.json" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run test/benchmark.test.ts"
+  },
   "dependencies": {
     "@henosis/core": "workspace:*",
     "@henosis/platform-cloudflare": "workspace:*",
     "@henosis/platform-k8s": "workspace:*",
     "@henosis/platform-supabase": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10"
   }
 }

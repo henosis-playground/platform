@@ -193,12 +193,14 @@ export declare class AuthoringError extends Error {
     readonly help: string;
     constructor(code: string, summary: string, help: string);
 }
-export interface BlockedWire {
-    readonly code: "HENOSIS_BLOCKED";
+export interface HostBlockedDetail {
     readonly input: string;
     readonly source: string;
     readonly operation: string;
     readonly message: string;
+}
+export interface BlockedWire extends HostBlockedDetail {
+    readonly code: "HENOSIS_BLOCKED";
 }
 export declare class Blocked extends Error {
     readonly input: string;
