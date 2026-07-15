@@ -17,7 +17,10 @@ export interface SourceRef {
 export interface WorkerBody {
   readonly source: SourceRef;
   readonly compatibilityDate?: string;
+  readonly compatibilityFlags?: readonly string[];
   readonly vars?: Readonly<Record<string, string | number | boolean>>;
+  /** Named Cloudflare service bindings keyed by the binding visible to the Worker. */
+  readonly services?: Readonly<Record<string, string>>;
 }
 
 export const workerOutputs = {
