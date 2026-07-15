@@ -4,7 +4,7 @@ export type JsonValue = null | boolean | number | string | readonly JsonValue[] 
 declare const schemaSymbol: unique symbol;
 declare const schemaValue: unique symbol;
 export type SchemaWire = {
-    readonly kind: "string" | "url" | "number" | "boolean" | "json";
+    readonly kind: "string" | "url" | "number" | "boolean" | "json" | "artifact";
 } | {
     readonly kind: "array";
     readonly element: SchemaWire;
@@ -19,12 +19,14 @@ export interface Schema<Value> {
 }
 export type InferSchema<S extends Schema<unknown>> = S extends Schema<infer Value> ? Value : never;
 export type SchemaFields = Readonly<Record<string, Schema<unknown>>>;
+export type ArtifactDigest = `sha256:${string}`;
 export declare const value: Readonly<{
     string: () => Schema<string>;
     url: () => Schema<string>;
     number: () => Schema<number>;
     boolean: () => Schema<boolean>;
     json: () => Schema<JsonValue>;
+    artifactDigest: () => Schema<ArtifactDigest>;
     array: <Element extends Schema<unknown>>(element: Element) => Schema<readonly InferSchema<Element>[]>;
     object: <const Fields extends SchemaFields>(fields: Fields) => Schema<{ readonly [Key in keyof Fields]: InferSchema<Fields[Key]>; }>;
 }>;
@@ -69,20 +71,33 @@ export interface ConfigInputDeclaration<Value> {
 }
 export type InputDeclaration<Value, Optional extends boolean = false> = OutputInputDeclaration<Value, Optional> | ConfigInputDeclaration<Value>;
 export type InputDeclarations = Readonly<Record<string, InputDeclaration<unknown, boolean>>>;
-export type NativeFileKind = "file" | "directory";
-export interface NativeFileDeclaration {
+export interface ConfigFileDeclaration {
     readonly path: string;
-    readonly kind: NativeFileKind;
     /** Optional author assertion. The bundler always computes the closure digest. */
-    readonly sha256?: `sha256:${string}`;
+    readonly sha256?: ArtifactDigest;
 }
 export interface ClosureFile {
     readonly path: string;
-    readonly sha256: `sha256:${string}`;
+    readonly sha256: ArtifactDigest;
 }
-export declare const native: Readonly<{
-    file(path: string, sha256?: `sha256:${string}`): NativeFileDeclaration;
-    directory(path: string): NativeFileDeclaration;
+export declare const config: Readonly<{
+    file(path: string, sha256?: ArtifactDigest): ConfigFileDeclaration;
+}>;
+export type ArtifactKind = "cloudflare-worker" | "static-assets";
+export interface ArtifactReference<Kind extends ArtifactKind = ArtifactKind> {
+    readonly kind: Kind;
+    readonly digest: ArtifactDigest;
+}
+export interface ArtifactBuildDeclaration {
+    readonly kind: ArtifactKind;
+    readonly input: string;
+    readonly path: string;
+}
+export declare const artifact: Readonly<{
+    buildWorker(input: string, entry: string): ArtifactBuildDeclaration;
+    buildAssets(input: string, directory: string): ArtifactBuildDeclaration;
+    worker(digest: ArtifactDigest): ArtifactReference<"cloudflare-worker">;
+    assets(digest: ArtifactDigest): ArtifactReference<"static-assets">;
 }>;
 export declare const input: Readonly<{
     required<Value>(source: OutputHandle<Value, boolean>): OutputInputDeclaration<Value, false>;
@@ -100,24 +115,23 @@ export interface OptionalInputValue<Value> extends InputValue<Value> {
 export type BuildInputs<Declarations extends InputDeclarations> = {
     readonly [Key in keyof Declarations]: Declarations[Key] extends InputDeclaration<infer Value, infer Optional> ? Optional extends true ? OptionalInputValue<Value> : InputValue<Value> : never;
 };
-export interface NativeFileField {
-    /** RFC 6901-like body path. `*` selects every array element. */
-    readonly path: string;
-    readonly kind: NativeFileKind;
-    /** Optional sibling body path containing an author-declared digest. */
-    readonly expectedSha256Path?: string;
+export interface ConfigFileField {
+    /** RFC 6901-like path to each object containing a configuration-file reference. */
+    readonly references: string;
+    readonly pathField: string;
+    readonly digestField: string;
 }
 export interface ResourceIntent<Outputs extends OutputDeclarations> {
     readonly kind: string;
     readonly name: string;
     readonly body: unknown;
     readonly outputs: Outputs;
-    readonly nativeFiles: readonly NativeFileField[];
+    readonly configFiles: readonly ConfigFileField[];
 }
 export interface ResourceDefinition<Body extends object, Outputs extends OutputDeclarations> {
     readonly kind: string;
     readonly outputs: Outputs;
-    readonly nativeFiles: readonly NativeFileField[];
+    readonly configFiles: readonly ConfigFileField[];
     create(name: string, body: Body): ResourceIntent<Outputs>;
 }
 export interface ObservedOutputBinding<Value> {
@@ -134,20 +148,14 @@ export interface EmittedResource<Outputs extends OutputDeclarations> {
 export declare function defineResource<Body extends object, const Outputs extends OutputDeclarations>(spec: {
     readonly kind: string;
     readonly outputs: Outputs;
-    readonly nativeFiles?: readonly NativeFileField[];
+    readonly configFiles?: readonly ConfigFileField[];
 }): ResourceDefinition<Body, Outputs>;
-export interface NativeFileReferenceWire {
-    readonly path: string;
-    readonly kind: NativeFileKind;
-    readonly sha256?: `sha256:${string}`;
-}
 export interface ResourceEmission {
     readonly address: string;
     readonly kind: string;
     readonly name: string;
     readonly body: JsonValue;
     readonly canonical: string;
-    readonly files: readonly NativeFileReferenceWire[];
 }
 export interface BuildContext {
     emit<Outputs extends OutputDeclarations>(intent: ResourceIntent<Outputs>): EmittedResource<Outputs>;
@@ -158,8 +166,10 @@ export type BuildOutputs<Declarations extends OutputDeclarations> = {
 export interface ComponentSpec<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
     readonly name: string;
     readonly inputs?: Inputs;
-    /** Static native closure roots. Calls must remain literal so packaging never executes author code. */
-    readonly files?: readonly NativeFileDeclaration[];
+    /** Configuration content carried in the hermetic evaluation closure. */
+    readonly files?: readonly ConfigFileDeclaration[];
+    /** Frontend-only workload build declarations. Artifact bytes never enter the component bundle. */
+    readonly artifacts?: readonly ArtifactBuildDeclaration[];
     readonly outputs: Outputs;
     readonly build: (context: BuildContext, inputs: BuildInputs<Inputs>) => BuildOutputs<Outputs>;
 }
@@ -167,7 +177,7 @@ export interface ComponentDefinition<Inputs extends InputDeclarations = InputDec
     readonly protocolVersion: 1;
     readonly name: string;
     readonly inputs: Inputs;
-    readonly files: readonly NativeFileDeclaration[];
+    readonly files: readonly ConfigFileDeclaration[];
     readonly outputs: Outputs;
     readonly build: ComponentSpec<Inputs, Outputs>["build"];
 }

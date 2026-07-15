@@ -6,7 +6,7 @@ const schemaSymbol: unique symbol = Symbol("henosis.schema") as never;
 declare const schemaValue: unique symbol;
 
 export type SchemaWire =
-  | { readonly kind: "string" | "url" | "number" | "boolean" | "json" }
+  | { readonly kind: "string" | "url" | "number" | "boolean" | "json" | "artifact" }
   | { readonly kind: "array"; readonly element: SchemaWire }
   | { readonly kind: "object"; readonly fields: Readonly<Record<string, SchemaWire>> };
 
@@ -23,12 +23,15 @@ function makeSchema<Value>(wire: SchemaWire): Schema<Value> {
   return Object.freeze({ kind: wire.kind, [schemaSymbol]: wire });
 }
 
+export type ArtifactDigest = `sha256:${string}`;
+
 export const value = Object.freeze({
   string: (): Schema<string> => makeSchema({ kind: "string" }),
   url: (): Schema<string> => makeSchema({ kind: "url" }),
   number: (): Schema<number> => makeSchema({ kind: "number" }),
   boolean: (): Schema<boolean> => makeSchema({ kind: "boolean" }),
   json: (): Schema<JsonValue> => makeSchema({ kind: "json" }),
+  artifactDigest: (): Schema<ArtifactDigest> => makeSchema({ kind: "artifact" }),
   array: <Element extends Schema<unknown>>(element: Element): Schema<readonly InferSchema<Element>[]> =>
     makeSchema({ kind: "array", element: schemaWire(element) }),
   object: <const Fields extends SchemaFields>(fields: Fields): Schema<{ readonly [Key in keyof Fields]: InferSchema<Fields[Key]> }> =>
@@ -116,31 +119,56 @@ export type InputDeclaration<Value, Optional extends boolean = false> =
 
 export type InputDeclarations = Readonly<Record<string, InputDeclaration<unknown, boolean>>>;
 
-export type NativeFileKind = "file" | "directory";
-
-export interface NativeFileDeclaration {
+export interface ConfigFileDeclaration {
   readonly path: string;
-  readonly kind: NativeFileKind;
   /** Optional author assertion. The bundler always computes the closure digest. */
-  readonly sha256?: `sha256:${string}`;
+  readonly sha256?: ArtifactDigest;
 }
 
 export interface ClosureFile {
   readonly path: string;
-  readonly sha256: `sha256:${string}`;
+  readonly sha256: ArtifactDigest;
 }
 
-export const native = Object.freeze({
-  file(path: string, sha256?: `sha256:${string}`): NativeFileDeclaration {
-    assertRepositoryPath(path, "native file");
-    if (sha256 !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(sha256)) {
-      throw diagnostic("HENOSIS_FILE_DIGEST", `Native file ${quoted(path)} has invalid expected digest ${quoted(sha256)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits, or omit the digest and let the bundler compute it.");
-    }
-    return Object.freeze({ path, kind: "file" as const, ...(sha256 === undefined ? {} : { sha256 }) });
+export const config = Object.freeze({
+  file(path: string, sha256?: ArtifactDigest): ConfigFileDeclaration {
+    assertRepositoryPath(path, "configuration file");
+    if (sha256 !== undefined) assertArtifactDigest(sha256, `configuration file ${quoted(path)}`);
+    return Object.freeze({ path, ...(sha256 === undefined ? {} : { sha256 }) });
   },
-  directory(path: string): NativeFileDeclaration {
-    assertRepositoryPath(path, "native directory");
-    return Object.freeze({ path, kind: "directory" as const });
+});
+
+export type ArtifactKind = "cloudflare-worker" | "static-assets";
+
+export interface ArtifactReference<Kind extends ArtifactKind = ArtifactKind> {
+  readonly kind: Kind;
+  readonly digest: ArtifactDigest;
+}
+
+export interface ArtifactBuildDeclaration {
+  readonly kind: ArtifactKind;
+  readonly input: string;
+  readonly path: string;
+}
+
+export const artifact = Object.freeze({
+  buildWorker(input: string, entry: string): ArtifactBuildDeclaration {
+    assertApiName(input, "artifact digest input name");
+    assertRepositoryPath(entry, "worker entry");
+    return Object.freeze({ kind: "cloudflare-worker" as const, input, path: entry });
+  },
+  buildAssets(input: string, directory: string): ArtifactBuildDeclaration {
+    assertApiName(input, "artifact digest input name");
+    assertRepositoryPath(directory, "static assets directory");
+    return Object.freeze({ kind: "static-assets" as const, input, path: directory });
+  },
+  worker(digest: ArtifactDigest): ArtifactReference<"cloudflare-worker"> {
+    assertArtifactDigest(digest, "worker artifact");
+    return Object.freeze({ kind: "cloudflare-worker" as const, digest });
+  },
+  assets(digest: ArtifactDigest): ArtifactReference<"static-assets"> {
+    assertArtifactDigest(digest, "static assets artifact");
+    return Object.freeze({ kind: "static-assets" as const, digest });
   },
 });
 
@@ -167,12 +195,11 @@ export type BuildInputs<Declarations extends InputDeclarations> = {
 
 // === RESOURCES ===
 
-export interface NativeFileField {
-  /** RFC 6901-like body path. `*` selects every array element. */
-  readonly path: string;
-  readonly kind: NativeFileKind;
-  /** Optional sibling body path containing an author-declared digest. */
-  readonly expectedSha256Path?: string;
+export interface ConfigFileField {
+  /** RFC 6901-like path to each object containing a configuration-file reference. */
+  readonly references: string;
+  readonly pathField: string;
+  readonly digestField: string;
 }
 
 export interface ResourceIntent<Outputs extends OutputDeclarations> {
@@ -180,13 +207,13 @@ export interface ResourceIntent<Outputs extends OutputDeclarations> {
   readonly name: string;
   readonly body: unknown;
   readonly outputs: Outputs;
-  readonly nativeFiles: readonly NativeFileField[];
+  readonly configFiles: readonly ConfigFileField[];
 }
 
 export interface ResourceDefinition<Body extends object, Outputs extends OutputDeclarations> {
   readonly kind: string;
   readonly outputs: Outputs;
-  readonly nativeFiles: readonly NativeFileField[];
+  readonly configFiles: readonly ConfigFileField[];
   create(name: string, body: Body): ResourceIntent<Outputs>;
 }
 
@@ -208,26 +235,20 @@ export interface EmittedResource<Outputs extends OutputDeclarations> {
 export function defineResource<Body extends object, const Outputs extends OutputDeclarations>(spec: {
   readonly kind: string;
   readonly outputs: Outputs;
-  readonly nativeFiles?: readonly NativeFileField[];
+  readonly configFiles?: readonly ConfigFileField[];
 }): ResourceDefinition<Body, Outputs> {
   assertKind(spec.kind);
   const outputs = freezeOutputs(spec.outputs);
-  const nativeFiles = Object.freeze([...(spec.nativeFiles ?? [])]);
+  const configFiles = Object.freeze([...(spec.configFiles ?? [])]);
   return Object.freeze({
     kind: spec.kind,
     outputs,
-    nativeFiles,
+    configFiles,
     create(name: string, body: Body): ResourceIntent<Outputs> {
       assertTargetName(name, "resource name");
-      return Object.freeze({ kind: spec.kind, name, body, outputs, nativeFiles });
+      return Object.freeze({ kind: spec.kind, name, body, outputs, configFiles });
     },
   });
-}
-
-export interface NativeFileReferenceWire {
-  readonly path: string;
-  readonly kind: NativeFileKind;
-  readonly sha256?: `sha256:${string}`;
 }
 
 export interface ResourceEmission {
@@ -236,7 +257,6 @@ export interface ResourceEmission {
   readonly name: string;
   readonly body: JsonValue;
   readonly canonical: string;
-  readonly files: readonly NativeFileReferenceWire[];
 }
 
 export interface BuildContext {
@@ -260,8 +280,10 @@ export type BuildOutputs<Declarations extends OutputDeclarations> = {
 export interface ComponentSpec<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
   readonly name: string;
   readonly inputs?: Inputs;
-  /** Static native closure roots. Calls must remain literal so packaging never executes author code. */
-  readonly files?: readonly NativeFileDeclaration[];
+  /** Configuration content carried in the hermetic evaluation closure. */
+  readonly files?: readonly ConfigFileDeclaration[];
+  /** Frontend-only workload build declarations. Artifact bytes never enter the component bundle. */
+  readonly artifacts?: readonly ArtifactBuildDeclaration[];
   readonly outputs: Outputs;
   readonly build: (context: BuildContext, inputs: BuildInputs<Inputs>) => BuildOutputs<Outputs>;
 }
@@ -270,7 +292,7 @@ export interface ComponentDefinition<Inputs extends InputDeclarations = InputDec
   readonly protocolVersion: 1;
   readonly name: string;
   readonly inputs: Inputs;
-  readonly files: readonly NativeFileDeclaration[];
+  readonly files: readonly ConfigFileDeclaration[];
   readonly outputs: Outputs;
   readonly build: ComponentSpec<Inputs, Outputs>["build"];
 }
@@ -301,6 +323,12 @@ export function defineComponent<
     } else if ("default" in declaration) {
       const defaultValue = snapshotJson(declaration.default, `default for config input ${name}`);
       assertSchemaValue(declaration.schema, defaultValue, `default for config input ${name}`);
+    }
+  }
+  for (const declaration of spec.artifacts ?? []) {
+    const artifactInput = inputs[declaration.input];
+    if (artifactInput?.kind !== "config" || schemaWire(artifactInput.schema).kind !== "artifact") {
+      throw diagnostic("HENOSIS_ARTIFACT_INPUT", `Artifact build for ${quoted(declaration.path)} targets input ${quoted(declaration.input)}, which is not an artifact-digest config input.`, `Declare ${declaration.input}: input.config(value.artifactDigest()).`);
     }
   }
   const definition = Object.freeze({ protocolVersion: 1 as const, name: spec.name, inputs, files, outputs, build: spec.build });
@@ -479,9 +507,9 @@ class ResourceSink implements BuildContext {
     if (this.state !== "open") throw diagnostic("HENOSIS_CLOSED_EMITTER", `The resource emitter is already ${this.state}.`, "Emit synchronously while build is running.");
     const address = `${intent.kind}/${intent.name}`;
     if (this.seen.has(address)) throw diagnostic("HENOSIS_DUPLICATE_RESOURCE", `Resource ${quoted(address)} was emitted more than once.`, "Give each resource of a kind a stable unique logical name.");
-    const body = snapshotJson(intent.body, `resource ${address}`);
-    const files = extractNativeFileReferences(body, intent.nativeFiles, this.closureFiles, address);
-    this.resources.push(Object.freeze({ address, kind: intent.kind, name: intent.name, body, canonical: canonicalStringify(body), files }));
+    const snapshot = snapshotJson(intent.body, `resource ${address}`);
+    const body = resolveConfigFileReferences(snapshot, intent.configFiles, this.closureFiles, address);
+    this.resources.push(Object.freeze({ address, kind: intent.kind, name: intent.name, body, canonical: canonicalStringify(body) }));
     this.seen.add(address);
     const outputs = Object.freeze(Object.fromEntries(Object.keys(intent.outputs).map((name) => [
       name,
@@ -601,74 +629,76 @@ function guardDeterminism<Result>(run: () => Result): Result {
 }
 
 function verifyClosureFiles(
-  declarations: readonly NativeFileDeclaration[],
+  declarations: readonly ConfigFileDeclaration[],
   closureFiles: readonly ClosureFile[],
 ): readonly ClosureFile[] {
   const sortedFiles = [...closureFiles].sort((left, right) => compareCodeUnits(left.path, right.path));
-  if (sortedFiles.length === 0) return Object.freeze(sortedFiles);
   const byPath = new Map(sortedFiles.map((file) => [file.path, file]));
   for (const declaration of declarations) {
-    const matches = declaration.kind === "file"
-      ? [byPath.get(declaration.path)].filter((file): file is ClosureFile => file !== undefined)
-      : sortedFiles.filter((file) => file.path.startsWith(`${declaration.path.replace(/\/$/u, "")}/`));
-    if (matches.length === 0) {
-      throw diagnostic("HENOSIS_FILE_CLOSURE", `Bundler omitted declared ${declaration.kind} ${quoted(declaration.path)} from the closure.`, "Rebuild the bundle from the repository root and include every component files declaration.");
+    const file = byPath.get(declaration.path);
+    if (file === undefined) {
+      throw diagnostic("HENOSIS_FILE_CLOSURE", `Bundler omitted declared configuration file ${quoted(declaration.path)} from the closure.`, "Rebuild the bundle from the repository root and include every component files declaration.");
     }
-    if (declaration.sha256 !== undefined && matches[0]?.sha256 !== declaration.sha256) {
-      throw diagnostic("HENOSIS_FILE_DIGEST", `Native file ${quoted(declaration.path)} expected ${declaration.sha256}, but the closure contains ${String(matches[0]?.sha256)}.`, "Update the expected digest or restore the intended file bytes.");
+    if (declaration.sha256 !== undefined && file.sha256 !== declaration.sha256) {
+      throw diagnostic("HENOSIS_FILE_DIGEST", `Configuration file ${quoted(declaration.path)} expected ${declaration.sha256}, but the closure contains ${file.sha256}.`, "Update the expected digest or restore the intended file bytes.");
     }
+  }
+  if (byPath.size !== declarations.length) {
+    throw diagnostic("HENOSIS_FILE_CLOSURE", "The bundler supplied configuration files not declared by the component.", "Rebuild the bundle from the current component source.");
   }
   return Object.freeze(sortedFiles.map((file) => Object.freeze({ ...file })));
 }
 
-function extractNativeFileReferences(
+function resolveConfigFileReferences(
   body: JsonValue,
-  fields: readonly NativeFileField[],
+  fields: readonly ConfigFileField[],
   closureFiles: ReadonlyMap<string, ClosureFile>,
   address: string,
-): readonly NativeFileReferenceWire[] {
-  const references: NativeFileReferenceWire[] = [];
+): JsonValue {
+  if (fields.length === 0) return body;
+  const resolved = JSON.parse(JSON.stringify(body)) as JsonValue;
   for (const field of fields) {
-    const paths = valuesAtPath(body, field.path);
-    const expected = field.expectedSha256Path === undefined ? [] : valuesAtPath(body, field.expectedSha256Path);
-    for (const [index, candidate] of paths.entries()) {
+    for (const reference of objectsAtPath(resolved, field.references)) {
+      const candidate = reference[field.pathField];
       if (typeof candidate !== "string") {
-        throw diagnostic("HENOSIS_RESOURCE_FILE_REF", `Resource ${quoted(address)} file field ${quoted(field.path)} is not a string.`, "Supply a repository-relative native file path.");
+        throw diagnostic("HENOSIS_RESOURCE_FILE_REF", `Resource ${quoted(address)} configuration-file field ${quoted(field.pathField)} is not a string.`, "Supply a declared repository-relative configuration-file path.");
       }
-      assertRepositoryPath(candidate, `resource ${address} native ${field.kind}`);
-      const expectedDigest = expected[index];
-      if (expectedDigest !== undefined && (typeof expectedDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(expectedDigest))) {
-        throw diagnostic("HENOSIS_FILE_DIGEST", `Resource ${quoted(address)} has an invalid expected digest at ${quoted(field.expectedSha256Path ?? "")}.`, "Use sha256 followed by 64 lowercase hexadecimal digits, or omit the digest.");
-      }
+      assertRepositoryPath(candidate, `resource ${address} configuration file`);
       const closure = closureFiles.get(candidate);
-      if (closure !== undefined && expectedDigest !== undefined && closure.sha256 !== expectedDigest) {
-        throw diagnostic("HENOSIS_FILE_DIGEST", `Resource ${quoted(address)} expected ${expectedDigest} for ${quoted(candidate)}, but the closure contains ${closure.sha256}.`, "Update the expected digest or restore the intended file bytes.");
+      if (closure === undefined) {
+        throw diagnostic("HENOSIS_RESOURCE_FILE_REF", `Resource ${quoted(address)} references configuration file ${quoted(candidate)}, but that file is not in its evaluation closure.`, "Add config.file(path) to the component files declaration.");
       }
-      references.push(Object.freeze({
-        path: candidate,
-        kind: field.kind,
-        ...(closure === undefined || field.kind === "directory" ? {} : { sha256: closure.sha256 }),
-      }));
+      const expected = reference[field.digestField];
+      if (expected !== undefined) {
+        if (typeof expected !== "string") {
+          throw diagnostic("HENOSIS_FILE_DIGEST", `Resource ${quoted(address)} has a non-string digest for ${quoted(candidate)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits, or omit the digest.");
+        }
+        assertArtifactDigest(expected, `resource ${quoted(address)} configuration file ${quoted(candidate)}`);
+        if (expected !== closure.sha256) {
+          throw diagnostic("HENOSIS_FILE_DIGEST", `Resource ${quoted(address)} expected ${expected} for ${quoted(candidate)}, but the closure contains ${closure.sha256}.`, "Update the expected digest or restore the intended file bytes.");
+        }
+      }
+      (reference as Record<string, JsonValue>)[field.digestField] = closure.sha256;
     }
   }
-  return Object.freeze(references.sort((left, right) => compareCodeUnits(left.path, right.path)));
+  return canonicalize(resolved);
 }
 
-function valuesAtPath(root: JsonValue, pointer: string): readonly JsonValue[] {
+function objectsAtPath(root: JsonValue, pointer: string): Record<string, JsonValue>[] {
   const segments = pointer.split("/").slice(1).map((segment) => segment.replace(/~1/gu, "/").replace(/~0/gu, "~"));
-  let values: readonly JsonValue[] = [root];
+  let values: JsonValue[] = [root];
   for (const segment of segments) {
     const next: JsonValue[] = [];
-    for (const value of values) {
+    for (const current of values) {
       if (segment === "*") {
-        if (Array.isArray(value)) next.push(...value);
-      } else if (value !== null && typeof value === "object" && !Array.isArray(value) && segment in value) {
-        next.push((value as Readonly<Record<string, JsonValue>>)[segment] as JsonValue);
+        if (Array.isArray(current)) next.push(...current);
+      } else if (current !== null && typeof current === "object" && !Array.isArray(current) && segment in current) {
+        next.push((current as Record<string, JsonValue>)[segment] as JsonValue);
       }
     }
     values = next;
   }
-  return values;
+  return values.filter((value): value is Record<string, JsonValue> => value !== null && typeof value === "object" && !Array.isArray(value));
 }
 
 function metadata(definition: {
@@ -711,6 +741,7 @@ function assertSchemaValue(schema: Schema<unknown>, candidate: JsonValue, label:
     case "number": if (typeof candidate !== "number") fail("number"); return;
     case "boolean": if (typeof candidate !== "boolean") fail("boolean"); return;
     case "json": return;
+    case "artifact": if (typeof candidate !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(candidate)) fail("artifact digest"); return;
     case "array": {
       if (!Array.isArray(candidate)) fail("array");
       for (const child of candidate as readonly JsonValue[]) {
@@ -741,6 +772,11 @@ function assertKind(kind: string): void { if (!/^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]
 function assertRepositoryPath(path: string, label: string): void {
   if (path.length === 0 || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw diagnostic("HENOSIS_FILE_PATH", `Invalid ${label} path ${quoted(path)}.`, "Use a normalized repository-relative path without empty, dot, parent, or backslash segments.");
+  }
+}
+function assertArtifactDigest(digest: string, label: string): asserts digest is ArtifactDigest {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+    throw diagnostic("HENOSIS_ARTIFACT_DIGEST", `Invalid ${label} digest ${quoted(digest)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits.");
   }
 }
 function assertTargetName(name: string, label: string): void { if (!/^[a-z][a-z0-9_-]{0,62}$/u.test(name)) throw diagnostic("HENOSIS_LOGICAL_NAME", `Invalid ${label} ${quoted(name)}.`, "Resource logical names and component names flow into target identifiers. Use 1-63 lowercase letters, digits, underscores, or hyphens, beginning with a letter."); }

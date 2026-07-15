@@ -11,13 +11,13 @@ export const schemaOutputs = {
 export const schema = defineResource({
     kind: "supabase/schema@1",
     outputs: schemaOutputs,
-    nativeFiles: [{
-            path: "/migrations/*/path",
-            kind: "file",
-            expectedSha256Path: "/migrations/*/sha256",
+    configFiles: [{
+            references: "/migrations/*",
+            pathField: "path",
+            digestField: "sha256",
         }],
 });
-/** Create a checked native-file migration reference. */
+/** Create a checked configuration-file migration reference. */
 export function migration(id, path, sha256) {
     if (!/^[a-z0-9][a-z0-9_-]{0,95}$/u.test(id)) {
         throw new Error("migration id must match [a-z0-9][a-z0-9_-]{0,95}");

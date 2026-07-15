@@ -2,7 +2,7 @@ import { defineResource, output, value } from "@henosis/core";
 
 export type AnonymousAccess = "none" | "read";
 
-/** Native SQL remains in repository files; the bundle records content identity, not wrapped SQL. */
+/** SQL is configuration content carried and verified in the component evaluation closure. */
 export interface MigrationRef {
   readonly id: string;
   readonly path: string;
@@ -34,14 +34,14 @@ export const schemaOutputs = {
 export const schema = defineResource<SchemaBody, typeof schemaOutputs>({
   kind: "supabase/schema@1",
   outputs: schemaOutputs,
-  nativeFiles: [{
-    path: "/migrations/*/path",
-    kind: "file",
-    expectedSha256Path: "/migrations/*/sha256",
+  configFiles: [{
+    references: "/migrations/*",
+    pathField: "path",
+    digestField: "sha256",
   }],
 });
 
-/** Create a checked native-file migration reference. */
+/** Create a checked configuration-file migration reference. */
 export function migration(
   id: string,
   path: string,

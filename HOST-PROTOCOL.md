@@ -47,6 +47,15 @@ the wrapper around `default.value` distinguishes a missing default from a JSON `
 `component.outputs` maps output names to `{ availability, optional, schema }`. The host uses this
 metadata to validate graph wiring and literal bindings before execution.
 
+`component.files` lists configuration content in the evaluation closure as
+`{ path, sha256 }`. The bundler computes every digest, copies the exact bytes beside the bundle, and
+includes the sorted file manifest in bundle identity; an optional author digest is only a cross-check.
+The SDK must reject a declared file omitted by the bundler, an undeclared supplied file, and a resource
+configuration-file reference that does not resolve in this list. Controllers read these bytes through
+a verified configuration-closure reader keyed by bundle digest and path, never from a checkout.
+Workload executables and assets are not component files: resources reference those separately by
+artifact kind and content digest, and graph-supplied config bindings carry those digests into `build()`.
+
 Component names and resource logical names match `^[a-z][a-z0-9_-]{0,62}$` because they flow into
 target identifiers. Input and output names are TypeScript API surface and match
 `^[A-Za-z][A-Za-z0-9]{0,62}$`; idiomatic camelCase is recommended. Source coordinates apply the
@@ -141,8 +150,8 @@ Each emission contains:
   "address": "cloudflare/worker@1/backend",
   "kind": "cloudflare/worker@1",
   "name": "backend",
-  "body": { "source": { "entry": "workers/backend.ts" } },
-  "canonical": "{\"source\":{\"entry\":\"workers/backend.ts\"}}"
+  "body": { "source": { "entry": { "kind": "cloudflare-worker", "digest": "sha256:0123..." } } },
+  "canonical": "{\"source\":{\"entry\":{\"digest\":\"sha256:0123...\",\"kind\":\"cloudflare-worker\"}}}"
 }
 ```
 
@@ -259,7 +268,8 @@ context outside rather than rewriting the inner message.
 The SDK guards `Date.now()` and `Math.random()` in the in-process host. The Rust isolate must enforce
 the stronger boundary: no `Date`, performance clock, timers, randomness, network, filesystem,
 environment, locale-sensitive host data, or unpinned imports. The bundler MUST resolve and embed the
-full module closure and native referenced files, then content-address the exact closure bytes.
+full module closure plus declared configuration files, then content-address the exact evaluation
+closure. Workload executables and assets are built and addressed in the separate artifact lane.
 
 Plan hashing SHOULD cover protocol version, bundle digest, canonical snapshot, static outputs,
 observed bindings, resource addresses, and each resource canonical body. Diagnostic prose and stack

@@ -1,9 +1,9 @@
-import { defineComponent, native, output, value } from "@henosis/core";
+import { config, defineComponent, output, value } from "@henosis/core";
 import { migration, schema } from "@henosis/platform-supabase";
 
 export default defineComponent({
   name: "database",
-  files: [native.file("supabase/migrations/202607150001_catalog.sql")],
+  files: [config.file("supabase/migrations/202607150001_catalog.sql")],
   outputs: {
     restUrl: output.observed(value.url()),
     anonKeyRef: output.observed(value.string()),

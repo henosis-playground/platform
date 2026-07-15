@@ -2,15 +2,16 @@ import {
   defineResource,
   output,
   value,
+  type ArtifactReference,
   type BuildContext,
   type EmittedResource,
 } from "@henosis/core";
 
 export interface SourceRef {
-  /** Repository-relative entry module bundled with the component closure. */
-  readonly entry: string;
-  /** Optional repository-relative static assets directory. */
-  readonly assets?: string;
+  /** Built worker module held in the workload artifact store. */
+  readonly entry: ArtifactReference<"cloudflare-worker">;
+  /** Optional built static-assets archive held in the workload artifact store. */
+  readonly assets?: ArtifactReference<"static-assets">;
 }
 
 export interface WorkerBody {
@@ -29,10 +30,6 @@ export const workerOutputs = {
 export const worker = defineResource<WorkerBody, typeof workerOutputs>({
   kind: "cloudflare/worker@1",
   outputs: workerOutputs,
-  nativeFiles: [
-    { path: "/source/entry", kind: "file" },
-    { path: "/source/assets", kind: "directory" },
-  ],
 });
 
 export interface TunnelBody {

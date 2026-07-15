@@ -2,9 +2,11 @@ import { executeComponent, getComponentDefinition, } from "./sdk.js";
 /** Pure in-process implementation of the Rust host's evaluation loop. */
 export class FakeHost {
     component;
+    closureFiles;
     cells = new Map();
-    constructor(component) {
+    constructor(component, closureFiles = []) {
         this.component = component;
+        this.closureFiles = closureFiles;
     }
     available(name, value) {
         this.cells.set(name, { state: "available", value });
@@ -37,7 +39,7 @@ export class FakeHost {
         };
         let result;
         try {
-            result = executeComponent(this.component, snapshot);
+            result = executeComponent(this.component, snapshot, this.closureFiles);
         }
         finally {
             if (previousMarker === undefined)

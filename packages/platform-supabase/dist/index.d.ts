@@ -1,5 +1,5 @@
 export type AnonymousAccess = "none" | "read";
-/** Native SQL remains in repository files; the bundle records content identity, not wrapped SQL. */
+/** SQL is configuration content carried and verified in the component evaluation closure. */
 export interface MigrationRef {
     readonly id: string;
     readonly path: string;
@@ -34,6 +34,6 @@ export declare const schema: import("@henosis/core").ResourceDefinition<SchemaBo
     readonly databaseUrlRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
     readonly anonKeyRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 }>;
-/** Create a checked native-file migration reference. */
+/** Create a checked configuration-file migration reference. */
 export declare function migration(id: string, path: string, sha256?: `sha256:${string}`): MigrationRef;
 //# sourceMappingURL=index.d.ts.map

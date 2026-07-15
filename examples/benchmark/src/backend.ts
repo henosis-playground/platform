@@ -1,14 +1,15 @@
-import { defineComponent, input, native, output, value } from "@henosis/core";
+import { artifact, defineComponent, input, output, value } from "@henosis/core";
 import { worker } from "@henosis/platform-cloudflare";
 import database from "./database.js";
 import tunnel from "./tunnel.js";
 
 export default defineComponent({
   name: "backend",
-  files: [native.file("workers/backend.ts")],
+  artifacts: [artifact.buildWorker("workerArtifact", "workers/backend.ts")],
   inputs: {
     databaseUrl: input.required(database.outputs.restUrl),
     tunnelHost: input.required(tunnel.outputs.hostname),
+    workerArtifact: input.config(value.artifactDigest()),
   },
   outputs: {
     url: output.observed(value.url()),
@@ -18,7 +19,7 @@ export default defineComponent({
     // HOVER_FIXTURE: inputs
     const workerName = "backend";
     const emitted = context.emit(worker.create(workerName, {
-      source: { entry: "workers/backend.ts" },
+      source: { entry: artifact.worker(inputs.workerArtifact.value) },
       compatibilityDate: "2026-07-15",
       vars: {
         SUPABASE_REST_URL: inputs.databaseUrl.value,

@@ -1,6 +1,7 @@
 import {
   executeComponent,
   getComponentDefinition,
+  type ClosureFile,
   type ComponentModule,
   type EvaluationResult,
   type EvaluationSnapshot,
@@ -18,7 +19,10 @@ export class FakeHost<
 > {
   private readonly cells = new Map<string, InputSnapshotCell>();
 
-  constructor(readonly component: ComponentModule<Inputs, Outputs>) {}
+  constructor(
+    readonly component: ComponentModule<Inputs, Outputs>,
+    private readonly closureFiles: readonly ClosureFile[] = [],
+  ) {}
 
   available(name: keyof Inputs & string, value: JsonValue): this {
     this.cells.set(name, { state: "available", value });
@@ -57,7 +61,7 @@ export class FakeHost<
 
     let result: EvaluationResult;
     try {
-      result = executeComponent(this.component, snapshot);
+      result = executeComponent(this.component, snapshot, this.closureFiles);
     } finally {
       if (previousMarker === undefined) delete hostGlobal.__henosis_mark_blocked;
       else hostGlobal.__henosis_mark_blocked = previousMarker;

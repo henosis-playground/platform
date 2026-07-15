@@ -3,6 +3,7 @@ import {
   AuthoringError,
   Blocked,
   canonicalStringify,
+  config,
   createBundle,
   defineComponent,
   defineResource,
@@ -82,6 +83,33 @@ describe("in-process host", () => {
       outputs: { description: "eu-west-1:1" },
       reads: ["region", "replicas"],
     });
+  });
+
+  it("resolves configuration-file references to bundler-computed digests", () => {
+    const migrations = defineResource<
+      { readonly migrations: readonly { readonly path: string; readonly sha256?: `sha256:${string}` }[] },
+      Record<never, never>
+    >({
+      kind: "test/migrations@1",
+      outputs: {},
+      configFiles: [{ references: "/migrations/*", pathField: "path", digestField: "sha256" }],
+    });
+    const configured = defineComponent({
+      name: "configured_files",
+      files: [config.file("migrations/001.sql")],
+      outputs: {},
+      build: (context) => {
+        context.emit(migrations.create("schema", { migrations: [{ path: "migrations/001.sql" }] }));
+        return {};
+      },
+    });
+    const digest = `sha256:${"ab".repeat(32)}` as const;
+
+    expect(new FakeHost(configured, [{ path: "migrations/001.sql", sha256: digest }]).run())
+      .toMatchObject({
+        resources: [{ body: { migrations: [{ path: "migrations/001.sql", sha256: digest }] } }],
+      });
+    expect(() => createBundle(configured, [])).toThrow("omitted declared configuration file");
   });
 
   it("evaluates fully and returns canonical total resources", () => {
