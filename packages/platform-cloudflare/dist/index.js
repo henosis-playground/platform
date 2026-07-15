@@ -8,6 +8,10 @@ export const workerOutputs = {
 export const worker = defineResource({
     kind: "cloudflare/worker@1",
     outputs: workerOutputs,
+    nativeFiles: [
+        { path: "/source/entry", kind: "file" },
+        { path: "/source/assets", kind: "directory" },
+    ],
 });
 export const tunnelOutputs = {
     tunnelId: output.observed(value.string()),

@@ -1,9 +1,10 @@
-import { defineComponent, input, output, value } from "@henosis/core";
+import { defineComponent, input, native, output, value } from "@henosis/core";
 import { worker } from "@henosis/platform-cloudflare";
 import backend from "./backend.js";
 
 export default defineComponent({
   name: "frontend",
+  files: [native.file("workers/frontend.ts"), native.directory("web/dist")],
   inputs: { backendUrl: input.required(backend.outputs.url) },
   outputs: { url: output.observed(value.url()) },
   build(context, inputs) {

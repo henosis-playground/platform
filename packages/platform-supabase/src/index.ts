@@ -6,7 +6,7 @@ export type AnonymousAccess = "none" | "read";
 export interface MigrationRef {
   readonly id: string;
   readonly path: string;
-  readonly sha256: `sha256:${string}`;
+  readonly sha256?: `sha256:${string}`;
 }
 
 export interface SchemaBody {
@@ -34,13 +34,18 @@ export const schemaOutputs = {
 export const schema = defineResource<SchemaBody, typeof schemaOutputs>({
   kind: "supabase/schema@1",
   outputs: schemaOutputs,
+  nativeFiles: [{
+    path: "/migrations/*/path",
+    kind: "file",
+    expectedSha256Path: "/migrations/*/sha256",
+  }],
 });
 
 /** Create a checked native-file migration reference. */
 export function migration(
   id: string,
   path: string,
-  sha256: `sha256:${string}`,
+  sha256?: `sha256:${string}`,
 ): MigrationRef {
   if (!/^[a-z0-9][a-z0-9_-]{0,95}$/u.test(id)) {
     throw new Error("migration id must match [a-z0-9][a-z0-9_-]{0,95}");
@@ -48,8 +53,8 @@ export function migration(
   if (path.length === 0 || path.startsWith("/") || path.split(/[\\/]/u).includes("..")) {
     throw new Error("migration path must be repository-relative without parent traversal");
   }
-  if (!/^sha256:[0-9a-f]{64}$/u.test(sha256)) {
+  if (sha256 !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(sha256)) {
     throw new Error("migration sha256 must contain 64 lowercase hexadecimal digits");
   }
-  return Object.freeze({ id, path, sha256 });
+  return Object.freeze({ id, path, ...(sha256 === undefined ? {} : { sha256 }) });
 }

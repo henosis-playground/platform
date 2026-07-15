@@ -3,7 +3,7 @@ export type AnonymousAccess = "none" | "read";
 export interface MigrationRef {
     readonly id: string;
     readonly path: string;
-    readonly sha256: `sha256:${string}`;
+    readonly sha256?: `sha256:${string}`;
 }
 export interface SchemaBody {
     readonly stack: "local";
@@ -35,5 +35,5 @@ export declare const schema: import("@henosis/core").ResourceDefinition<SchemaBo
     readonly anonKeyRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 }>;
 /** Create a checked native-file migration reference. */
-export declare function migration(id: string, path: string, sha256: `sha256:${string}`): MigrationRef;
+export declare function migration(id: string, path: string, sha256?: `sha256:${string}`): MigrationRef;
 //# sourceMappingURL=index.d.ts.map

@@ -38,6 +38,19 @@ const componentSymbol = Symbol.for("henosis.component.v1");
 const outputHandleSymbol = Symbol.for("henosis.output-handle.v1");
 const inputValueSymbol = Symbol("henosis.input-value");
 const bindingSymbol = Symbol("henosis.output-binding");
+export const native = Object.freeze({
+    file(path, sha256) {
+        assertRepositoryPath(path, "native file");
+        if (sha256 !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(sha256)) {
+            throw diagnostic("HENOSIS_FILE_DIGEST", `Native file ${quoted(path)} has invalid expected digest ${quoted(sha256)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits, or omit the digest and let the bundler compute it.");
+        }
+        return Object.freeze({ path, kind: "file", ...(sha256 === undefined ? {} : { sha256 }) });
+    },
+    directory(path) {
+        assertRepositoryPath(path, "native directory");
+        return Object.freeze({ path, kind: "directory" });
+    },
+});
 export const input = Object.freeze({
     required(source) {
         return Object.freeze({ kind: "output", source, optional: false });
@@ -52,18 +65,21 @@ export const input = Object.freeze({
 export function defineResource(spec) {
     assertKind(spec.kind);
     const outputs = freezeOutputs(spec.outputs);
+    const nativeFiles = Object.freeze([...(spec.nativeFiles ?? [])]);
     return Object.freeze({
         kind: spec.kind,
         outputs,
+        nativeFiles,
         create(name, body) {
             assertTargetName(name, "resource name");
-            return Object.freeze({ kind: spec.kind, name, body, outputs });
+            return Object.freeze({ kind: spec.kind, name, body, outputs, nativeFiles });
         },
     });
 }
 export function defineComponent(spec) {
     assertTargetName(spec.name, "component name");
     const inputs = Object.freeze({ ...(spec.inputs ?? {}) });
+    const files = Object.freeze([...(spec.files ?? [])]);
     const outputs = freezeOutputs(spec.outputs);
     for (const [name, declaration] of Object.entries(inputs)) {
         assertApiName(name, "input name");
@@ -80,7 +96,7 @@ export function defineComponent(spec) {
             assertSchemaValue(declaration.schema, defaultValue, `default for config input ${name}`);
         }
     }
-    const definition = Object.freeze({ protocolVersion: 1, name: spec.name, inputs, outputs, build: spec.build });
+    const definition = Object.freeze({ protocolVersion: 1, name: spec.name, inputs, files, outputs, build: spec.build });
     const handles = Object.freeze(Object.fromEntries(Object.entries(outputs).map(([name, declaration]) => [
         name,
         Object.freeze({ component: spec.name, output: name, optional: declaration.optional, [outputHandleSymbol]: true }),
@@ -90,21 +106,22 @@ export function defineComponent(spec) {
 export function getComponentDefinition(component) {
     return component[componentSymbol];
 }
-export function createBundle(component) {
+export function createBundle(component, closureFiles = []) {
     const definition = getComponentDefinition(component);
+    const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
     return Object.freeze({
         protocolVersion: 1,
-        component: metadata(definition),
-        evaluate: (snapshot) => executeComponent(component, snapshot),
+        component: metadata(definition, verifiedFiles),
+        evaluate: (snapshot) => executeComponent(component, snapshot, verifiedFiles),
     });
 }
-export function executeComponent(component, snapshot) {
+export function executeComponent(component, snapshot, closureFiles = []) {
     if (snapshot.protocolVersion !== 1) {
         throw diagnostic("HENOSIS_PROTOCOL_VERSION", `Unsupported snapshot protocol ${String(snapshot.protocolVersion)}.`, "Use the same HOST-PROTOCOL.md version on both sides of the isolate boundary.");
     }
     const definition = getComponentDefinition(component);
     const reads = new Set();
-    const sink = new ResourceSink();
+    const sink = new ResourceSink(closureFiles);
     const inputs = materializeInputs(definition.inputs, snapshot.inputs, reads);
     try {
         const result = guardDeterminism(() => definition.build(sink, inputs));
@@ -177,6 +194,10 @@ class ResourceSink {
     state = "open";
     resources = [];
     seen = new Set();
+    closureFiles;
+    constructor(closureFiles) {
+        this.closureFiles = new Map(closureFiles.map((file) => [file.path, file]));
+    }
     emit(intent) {
         if (this.state !== "open")
             throw diagnostic("HENOSIS_CLOSED_EMITTER", `The resource emitter is already ${this.state}.`, "Emit synchronously while build is running.");
@@ -184,7 +205,8 @@ class ResourceSink {
         if (this.seen.has(address))
             throw diagnostic("HENOSIS_DUPLICATE_RESOURCE", `Resource ${quoted(address)} was emitted more than once.`, "Give each resource of a kind a stable unique logical name.");
         const body = snapshotJson(intent.body, `resource ${address}`);
-        this.resources.push(Object.freeze({ address, kind: intent.kind, name: intent.name, body, canonical: canonicalStringify(body) }));
+        const files = extractNativeFileReferences(body, intent.nativeFiles, this.closureFiles, address);
+        this.resources.push(Object.freeze({ address, kind: intent.kind, name: intent.name, body, canonical: canonicalStringify(body), files }));
         this.seen.add(address);
         const outputs = Object.freeze(Object.fromEntries(Object.keys(intent.outputs).map((name) => [
             name,
@@ -314,7 +336,70 @@ function guardDeterminism(run) {
         Math.random = random;
     }
 }
-function metadata(definition) {
+function verifyClosureFiles(declarations, closureFiles) {
+    const sortedFiles = [...closureFiles].sort((left, right) => compareCodeUnits(left.path, right.path));
+    if (sortedFiles.length === 0)
+        return Object.freeze(sortedFiles);
+    const byPath = new Map(sortedFiles.map((file) => [file.path, file]));
+    for (const declaration of declarations) {
+        const matches = declaration.kind === "file"
+            ? [byPath.get(declaration.path)].filter((file) => file !== undefined)
+            : sortedFiles.filter((file) => file.path.startsWith(`${declaration.path.replace(/\/$/u, "")}/`));
+        if (matches.length === 0) {
+            throw diagnostic("HENOSIS_FILE_CLOSURE", `Bundler omitted declared ${declaration.kind} ${quoted(declaration.path)} from the closure.`, "Rebuild the bundle from the repository root and include every component files declaration.");
+        }
+        if (declaration.sha256 !== undefined && matches[0]?.sha256 !== declaration.sha256) {
+            throw diagnostic("HENOSIS_FILE_DIGEST", `Native file ${quoted(declaration.path)} expected ${declaration.sha256}, but the closure contains ${String(matches[0]?.sha256)}.`, "Update the expected digest or restore the intended file bytes.");
+        }
+    }
+    return Object.freeze(sortedFiles.map((file) => Object.freeze({ ...file })));
+}
+function extractNativeFileReferences(body, fields, closureFiles, address) {
+    const references = [];
+    for (const field of fields) {
+        const paths = valuesAtPath(body, field.path);
+        const expected = field.expectedSha256Path === undefined ? [] : valuesAtPath(body, field.expectedSha256Path);
+        for (const [index, candidate] of paths.entries()) {
+            if (typeof candidate !== "string") {
+                throw diagnostic("HENOSIS_RESOURCE_FILE_REF", `Resource ${quoted(address)} file field ${quoted(field.path)} is not a string.`, "Supply a repository-relative native file path.");
+            }
+            assertRepositoryPath(candidate, `resource ${address} native ${field.kind}`);
+            const expectedDigest = expected[index];
+            if (expectedDigest !== undefined && (typeof expectedDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(expectedDigest))) {
+                throw diagnostic("HENOSIS_FILE_DIGEST", `Resource ${quoted(address)} has an invalid expected digest at ${quoted(field.expectedSha256Path ?? "")}.`, "Use sha256 followed by 64 lowercase hexadecimal digits, or omit the digest.");
+            }
+            const closure = closureFiles.get(candidate);
+            if (closure !== undefined && expectedDigest !== undefined && closure.sha256 !== expectedDigest) {
+                throw diagnostic("HENOSIS_FILE_DIGEST", `Resource ${quoted(address)} expected ${expectedDigest} for ${quoted(candidate)}, but the closure contains ${closure.sha256}.`, "Update the expected digest or restore the intended file bytes.");
+            }
+            references.push(Object.freeze({
+                path: candidate,
+                kind: field.kind,
+                ...(closure === undefined || field.kind === "directory" ? {} : { sha256: closure.sha256 }),
+            }));
+        }
+    }
+    return Object.freeze(references.sort((left, right) => compareCodeUnits(left.path, right.path)));
+}
+function valuesAtPath(root, pointer) {
+    const segments = pointer.split("/").slice(1).map((segment) => segment.replace(/~1/gu, "/").replace(/~0/gu, "~"));
+    let values = [root];
+    for (const segment of segments) {
+        const next = [];
+        for (const value of values) {
+            if (segment === "*") {
+                if (Array.isArray(value))
+                    next.push(...value);
+            }
+            else if (value !== null && typeof value === "object" && !Array.isArray(value) && segment in value) {
+                next.push(value[segment]);
+            }
+        }
+        values = next;
+    }
+    return values;
+}
+function metadata(definition, files) {
     return Object.freeze({
         name: definition.name,
         inputs: Object.freeze(Object.fromEntries(Object.entries(definition.inputs).map(([name, declaration]) => {
@@ -329,6 +414,7 @@ function metadata(definition) {
             return [name, Object.freeze(config)];
         }))),
         outputs: Object.freeze(Object.fromEntries(Object.entries(definition.outputs).map(([name, declaration]) => [name, Object.freeze({ availability: declaration.availability, optional: declaration.optional, schema: schemaWire(declaration.schema) })]))),
+        files,
     });
 }
 function freezeOutputs(outputs) {
@@ -390,6 +476,11 @@ function sourceLabel(name, declaration) {
 }
 function assertKind(kind) { if (!/^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*@[1-9][0-9]*$/u.test(kind))
     throw diagnostic("HENOSIS_RESOURCE_KIND", `Invalid resource kind ${quoted(kind)}.`, "Use a versioned kind such as cloudflare/worker@1."); }
+function assertRepositoryPath(path, label) {
+    if (path.length === 0 || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
+        throw diagnostic("HENOSIS_FILE_PATH", `Invalid ${label} path ${quoted(path)}.`, "Use a normalized repository-relative path without empty, dot, parent, or backslash segments.");
+    }
+}
 function assertTargetName(name, label) { if (!/^[a-z][a-z0-9_-]{0,62}$/u.test(name))
     throw diagnostic("HENOSIS_LOGICAL_NAME", `Invalid ${label} ${quoted(name)}.`, "Resource logical names and component names flow into target identifiers. Use 1-63 lowercase letters, digits, underscores, or hyphens, beginning with a letter."); }
 function assertApiName(name, label) { if (!/^[A-Za-z][A-Za-z0-9]{0,62}$/u.test(name))
