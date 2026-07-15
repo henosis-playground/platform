@@ -1,4 +1,4 @@
-import { executeComponent, } from "./sdk.js";
+import { executeComponent, getComponentDefinition, } from "./sdk.js";
 /** Pure in-process implementation of the Rust host's evaluation loop. */
 export class FakeHost {
     component;
@@ -19,9 +19,15 @@ export class FakeHost {
         return this;
     }
     run() {
+        const cells = new Map(this.cells);
+        for (const [name, declaration] of Object.entries(getComponentDefinition(this.component).inputs)) {
+            if (!cells.has(name) && declaration.kind === "config" && declaration.default !== undefined) {
+                cells.set(name, { state: "available", value: declaration.default });
+            }
+        }
         const snapshot = {
             protocolVersion: 1,
-            inputs: Object.freeze(Object.fromEntries(this.cells)),
+            inputs: Object.freeze(Object.fromEntries(cells)),
         };
         let stickyBlocked;
         const hostGlobal = globalThis;

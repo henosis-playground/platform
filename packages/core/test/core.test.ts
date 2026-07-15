@@ -75,7 +75,7 @@ describe("in-process host", () => {
 
     expect(createBundle(configured).component.inputs).toEqual({
       region: { source: "config", schema: { kind: "string" } },
-      replicas: { source: "config", schema: { kind: "number" }, default: 1 },
+      replicas: { source: "config", schema: { kind: "number" }, default: { value: 1 } },
     });
     expect(new FakeHost(configured).available("region", "eu-west-1").run()).toMatchObject({
       status: "complete",

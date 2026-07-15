@@ -56,14 +56,25 @@ export interface OutputHandle<Value, Optional extends boolean = false> {
 export type ComponentOutputs<Declarations extends OutputDeclarations> = {
     readonly [Key in keyof Declarations]: Declarations[Key] extends OutputDeclaration<infer Value, infer Optional> ? OutputHandle<Value, Optional> : never;
 };
-export interface InputDeclaration<Value, Optional extends boolean = false> {
+export interface OutputInputDeclaration<Value, Optional extends boolean = false> {
+    readonly kind: "output";
     readonly source: OutputHandle<Value, boolean>;
     readonly optional: Optional;
 }
+export interface ConfigInputDeclaration<Value> {
+    readonly kind: "config";
+    readonly schema: Schema<Value>;
+    readonly optional: false;
+    readonly default?: Value;
+}
+export type InputDeclaration<Value, Optional extends boolean = false> = OutputInputDeclaration<Value, Optional> | ConfigInputDeclaration<Value>;
 export type InputDeclarations = Readonly<Record<string, InputDeclaration<unknown, boolean>>>;
 export declare const input: Readonly<{
-    required<Value>(source: OutputHandle<Value, boolean>): InputDeclaration<Value, false>;
-    optional<Value>(source: OutputHandle<Value, true>): InputDeclaration<Value, true>;
+    required<Value>(source: OutputHandle<Value, boolean>): OutputInputDeclaration<Value, false>;
+    optional<Value>(source: OutputHandle<Value, true>): OutputInputDeclaration<Value, true>;
+    config<Value>(schema: Schema<Value>, options?: {
+        readonly default?: Value;
+    }): ConfigInputDeclaration<Value>;
 }>;
 export interface InputValue<Value> {
     readonly value: Value;
@@ -149,11 +160,17 @@ export interface OutputBindingWire {
     readonly resource: string;
     readonly output: string;
 }
-export interface InputMetadataWire {
+export type InputMetadataWire = {
     readonly component: string;
     readonly output: string;
     readonly optional: boolean;
-}
+} | {
+    readonly source: "config";
+    readonly schema: SchemaWire;
+    readonly default?: {
+        readonly value: JsonValue;
+    };
+};
 export interface OutputMetadataWire {
     readonly availability: OutputAvailability;
     readonly optional: boolean;

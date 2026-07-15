@@ -34,9 +34,18 @@ This is the shape returned by `createBundle(component)`. The host MUST reject a 
 unknown protocol version, duplicate component name, or metadata that is not plain JSON-compatible
 data. Functions appear only at `evaluate`; metadata contains no executable values.
 
-`component.inputs` maps local input names to `{ component, output, optional }` source coordinates.
+`component.inputs` maps local input names to one of two metadata shapes:
+
+```ts
+type InputMetadataWire =
+  | { component: string; output: string; optional: boolean }
+  | { source: "config"; schema: SchemaWire; default?: { value: JsonValue } };
+```
+
+The first shape consumes another component's output. The second declares a graph-supplied literal;
+the wrapper around `default.value` distinguishes a missing default from a JSON `null` default.
 `component.outputs` maps output names to `{ availability, optional, schema }`. The host uses this
-metadata to construct snapshots and validate graph wiring before execution.
+metadata to validate graph wiring and literal bindings before execution.
 
 Component names and resource logical names match `^[a-z][a-z0-9_-]{0,62}$` because they flow into
 target identifiers. Input and output names are TypeScript API surface and match
@@ -58,12 +67,15 @@ component rule to `component` and the API rule to `output`.
 
 The host MUST provide exactly one cell for every declared local input and no extra cells.
 
-- `available`: the producer output exists in this graph generation and its concrete JSON value is
-  available. The value MUST already satisfy the producer schema.
-- `blocked`: the output is present/required but not concrete yet, normally because a controller has
-  not published an observed output for this generation.
+- `available`: either a producer output is concrete, or the graph supplied a config literal (or the
+  declaration's default was selected). Output values MUST satisfy the producer schema; config values
+  MUST satisfy the config input's own schema. Both sources are intentionally indistinguishable to
+  component code after snapshot construction.
+- `blocked`: an output-sourced input is present/required but not concrete yet, normally because a
+  controller has not published an observed output for this generation. Config inputs are never
+  `blocked`.
 - `absent`: an optional producer output is known not to exist in this generation. It is invalid for
-  a required input.
+  a required or config input.
 
 Presence is a plan-time fact, not a value read. For an optional input, `.present` is `false` only for
 `absent`; it is `true` for both `available` and `blocked`. Authors may branch on `.present` without
@@ -72,7 +84,14 @@ available value, throws `Blocked`, or produces an author error for an absent val
 
 Generation fencing is external to the isolate. The host MUST only use outputs carrying the same
 graph generation as the evaluation. An output from generation N MUST never enter a generation N+1
-snapshot, even when component and output names match.
+snapshot, even when component and output names match. A changed config binding is likewise a new
+graph generation; the host MUST rebuild the snapshot and re-evaluate rather than mutating an accepted
+plan in place.
+
+At graph acceptance, the host MUST reject and aggregate all missing required config bindings, bindings
+to undeclared or output-sourced inputs, and schema mismatches. A declared default is used only when the
+graph omits that input. Explicit graph bindings override defaults. Diagnostics MUST name the component,
+local input, expected schema, and received JSON kind when a value is present but invalid.
 
 ## 4. Input handle semantics
 
@@ -252,9 +271,12 @@ Before evaluation, Rust must verify:
 
 1. protocol version and export shape;
 2. unique, valid component/input/output names;
-3. every input source exists and schema types unify;
-4. `absent` is used only for optional inputs;
-5. available values satisfy producer schemas and generation fencing.
+3. every output input source exists and schema types unify;
+4. every config input has a graph binding or declared default, and every selected literal satisfies
+   its config schema;
+5. graph bindings name config inputs only, with all binding diagnostics aggregated;
+6. `absent` is used only for optional output-sourced inputs;
+7. available output values satisfy producer schemas and generation fencing.
 
 After evaluation, Rust must verify:
 

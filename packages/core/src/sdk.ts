@@ -279,8 +279,8 @@ export interface EvaluationSnapshot {
 
 export interface OutputBindingWire { readonly resource: string; readonly output: string; }
 export type InputMetadataWire =
-  | { readonly source: "output"; readonly component: string; readonly output: string; readonly optional: boolean }
-  | { readonly source: "config"; readonly schema: SchemaWire; readonly default?: JsonValue };
+  | { readonly component: string; readonly output: string; readonly optional: boolean }
+  | { readonly source: "config"; readonly schema: SchemaWire; readonly default?: { readonly value: JsonValue } };
 export interface OutputMetadataWire { readonly availability: OutputAvailability; readonly optional: boolean; readonly schema: SchemaWire; }
 export interface ComponentMetadataWire {
   readonly name: string;
@@ -547,12 +547,12 @@ function metadata(definition: {
     name: definition.name,
     inputs: Object.freeze(Object.fromEntries(Object.entries(definition.inputs).map(([name, declaration]) => {
       if (declaration.kind === "output") {
-        return [name, Object.freeze({ source: "output" as const, component: declaration.source.component, output: declaration.source.output, optional: declaration.optional })];
+        return [name, Object.freeze({ component: declaration.source.component, output: declaration.source.output, optional: declaration.optional })];
       }
       const config = {
         source: "config" as const,
         schema: schemaWire(declaration.schema),
-        ...(declaration.default === undefined ? {} : { default: snapshotJson(declaration.default, `default for config input ${name}`) }),
+        ...(declaration.default === undefined ? {} : { default: Object.freeze({ value: snapshotJson(declaration.default, `default for config input ${name}`) }) }),
       };
       return [name, Object.freeze(config)];
     }))),
