@@ -91,13 +91,13 @@ export function defineComponent(spec) {
 export function getComponentDefinition(component) {
     return component[componentSymbol];
 }
-export function createBundle(component, closureFiles = [], derivedInputs = {}, compiledDependencies = []) {
+export function createBundle(component, closureFiles = [], derivedInputs = {}, compiledDependencies = [], revision = "unknown") {
     const definition = getComponentDefinition(component);
     const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
     const inputs = verifyDerivedInputs(definition, derivedInputs);
     return Object.freeze({
         protocolVersion: 1,
-        component: metadata(definition, inputs, verifiedFiles, compiledDependencies),
+        component: metadata(definition, inputs, verifiedFiles, compiledDependencies, revision),
         evaluate: (snapshot) => executeComponent(component, snapshot, verifiedFiles, inputs),
     });
 }
@@ -482,7 +482,7 @@ function objectsAtPath(root, pointer) {
     }
     return values.filter((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry));
 }
-function metadata(definition, derivedInputs, files, compiledDependencies) {
+function metadata(definition, derivedInputs, files, compiledDependencies, revision) {
     const inputs = {};
     for (const [name, declaration] of Object.entries(definition.config).sort(([left], [right]) => compareCodeUnits(left, right))) {
         const normalized = normalizeConfigDeclaration(declaration);
@@ -521,6 +521,7 @@ function metadata(definition, derivedInputs, files, compiledDependencies) {
     }
     return Object.freeze({
         name: definition.name,
+        revision,
         inputs: Object.freeze(inputs),
         outputs: outputMetadata(definition.outputs),
         compiledDependencies: Object.freeze(dependencies),

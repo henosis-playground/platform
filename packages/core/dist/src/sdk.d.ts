@@ -205,6 +205,7 @@ export interface CompiledDependencyWire {
 }
 export interface ComponentMetadataWire {
     readonly name: string;
+    readonly revision: string;
     readonly inputs: Readonly<Record<string, InputMetadataWire>>;
     readonly outputs: Readonly<Record<string, OutputMetadataWire>>;
     readonly compiledDependencies: readonly CompiledDependencyWire[];
@@ -237,7 +238,7 @@ export interface BundleModule {
     readonly component: ComponentMetadataWire;
     evaluate(snapshot: EvaluationSnapshot): EvaluationResult;
 }
-export declare function createBundle<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources, compiledDependencies?: readonly BundleCompiledDependency[]): BundleModule;
+export declare function createBundle<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources, compiledDependencies?: readonly BundleCompiledDependency[], revision?: string): BundleModule;
 export declare function executeComponent<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, snapshot: EvaluationSnapshot, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources): EvaluationResult;
 export declare class AuthoringError extends Error {
     readonly code: string;

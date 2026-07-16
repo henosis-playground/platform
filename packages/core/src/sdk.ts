@@ -325,6 +325,7 @@ export interface CompiledDependencyWire {
 
 export interface ComponentMetadataWire {
   readonly name: string;
+  readonly revision: string;
   readonly inputs: Readonly<Record<string, InputMetadataWire>>;
   readonly outputs: Readonly<Record<string, OutputMetadataWire>>;
   readonly compiledDependencies: readonly CompiledDependencyWire[];
@@ -368,13 +369,14 @@ export function createBundle<Config extends ConfigDeclarations, Outputs extends 
   closureFiles: readonly ClosureFile[] = [],
   derivedInputs: BundleInputSources = {},
   compiledDependencies: readonly BundleCompiledDependency[] = [],
+  revision = "unknown",
 ): BundleModule {
   const definition = getComponentDefinition(component);
   const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
   const inputs = verifyDerivedInputs(definition, derivedInputs);
   return Object.freeze({
     protocolVersion: 1 as const,
-    component: metadata(definition, inputs, verifiedFiles, compiledDependencies),
+    component: metadata(definition, inputs, verifiedFiles, compiledDependencies, revision),
     evaluate: (snapshot: EvaluationSnapshot) => executeComponent(component, snapshot, verifiedFiles, inputs),
   });
 }
@@ -796,6 +798,7 @@ function metadata(
   derivedInputs: BundleInputSources,
   files: readonly ClosureFile[],
   compiledDependencies: readonly BundleCompiledDependency[],
+  revision: string,
 ): ComponentMetadataWire {
   const inputs: Record<string, InputMetadataWire> = {};
   for (const [name, declaration] of Object.entries(definition.config).sort(([left], [right]) => compareCodeUnits(left, right))) {
@@ -843,6 +846,7 @@ function metadata(
   }
   return Object.freeze({
     name: definition.name,
+    revision,
     inputs: Object.freeze(inputs),
     outputs: outputMetadata(definition.outputs),
     compiledDependencies: Object.freeze(dependencies),

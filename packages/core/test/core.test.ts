@@ -72,7 +72,8 @@ describe("restored authoring surface", () => {
       component: producer,
       revision: "0123456789abcdef",
       consumedOutputs: ["preview", "endpoint", "endpoint"],
-    }]);
+    }], "consumer-revision");
+    expect(bundled.component.revision).toBe("consumer-revision");
     expect(bundled.component.inputs).toEqual({
       label: { source: "config", schema: { kind: "string" }, default: { value: "consumer" } },
       producerEndpoint: { component: "producer", output: "endpoint", optional: false },
