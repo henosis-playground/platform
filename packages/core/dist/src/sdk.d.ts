@@ -197,11 +197,24 @@ export interface OutputMetadataWire {
     readonly optional: boolean;
     readonly schema: SchemaWire;
 }
+export interface CompiledDependencyWire {
+    readonly component: string;
+    readonly revision: string;
+    readonly outputs: Readonly<Record<string, OutputMetadataWire>>;
+    readonly consumedOutputs: readonly string[];
+}
 export interface ComponentMetadataWire {
     readonly name: string;
     readonly inputs: Readonly<Record<string, InputMetadataWire>>;
     readonly outputs: Readonly<Record<string, OutputMetadataWire>>;
+    readonly compiledDependencies: readonly CompiledDependencyWire[];
     readonly files: readonly ClosureFile[];
+}
+/** Bundler-derived facts from the actual producer modules in the resolved esbuild graph. */
+export interface BundleCompiledDependency {
+    readonly component: ComponentModule<ConfigDeclarations, OutputDeclarations>;
+    readonly revision: string;
+    readonly consumedOutputs: readonly string[];
 }
 export interface EvaluationSuccess {
     readonly protocolVersion: 1;
@@ -224,7 +237,7 @@ export interface BundleModule {
     readonly component: ComponentMetadataWire;
     evaluate(snapshot: EvaluationSnapshot): EvaluationResult;
 }
-export declare function createBundle<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources): BundleModule;
+export declare function createBundle<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources, compiledDependencies?: readonly BundleCompiledDependency[]): BundleModule;
 export declare function executeComponent<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, snapshot: EvaluationSnapshot, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources): EvaluationResult;
 export declare class AuthoringError extends Error {
     readonly code: string;

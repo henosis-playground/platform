@@ -316,11 +316,26 @@ export type InputMetadataWire =
   | { readonly component: string; readonly output: string; readonly optional: boolean }
   | { readonly source: "config"; readonly schema: SchemaWire; readonly default?: { readonly value: JsonValue } };
 export interface OutputMetadataWire { readonly availability: OutputAvailability; readonly optional: boolean; readonly schema: SchemaWire; }
+export interface CompiledDependencyWire {
+  readonly component: string;
+  readonly revision: string;
+  readonly outputs: Readonly<Record<string, OutputMetadataWire>>;
+  readonly consumedOutputs: readonly string[];
+}
+
 export interface ComponentMetadataWire {
   readonly name: string;
   readonly inputs: Readonly<Record<string, InputMetadataWire>>;
   readonly outputs: Readonly<Record<string, OutputMetadataWire>>;
+  readonly compiledDependencies: readonly CompiledDependencyWire[];
   readonly files: readonly ClosureFile[];
+}
+
+/** Bundler-derived facts from the actual producer modules in the resolved esbuild graph. */
+export interface BundleCompiledDependency {
+  readonly component: ComponentModule<ConfigDeclarations, OutputDeclarations>;
+  readonly revision: string;
+  readonly consumedOutputs: readonly string[];
 }
 
 export interface EvaluationSuccess {
@@ -352,13 +367,14 @@ export function createBundle<Config extends ConfigDeclarations, Outputs extends 
   component: ComponentModule<Config, Outputs>,
   closureFiles: readonly ClosureFile[] = [],
   derivedInputs: BundleInputSources = {},
+  compiledDependencies: readonly BundleCompiledDependency[] = [],
 ): BundleModule {
   const definition = getComponentDefinition(component);
   const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
   const inputs = verifyDerivedInputs(definition, derivedInputs);
   return Object.freeze({
     protocolVersion: 1 as const,
-    component: metadata(definition, inputs, verifiedFiles),
+    component: metadata(definition, inputs, verifiedFiles, compiledDependencies),
     evaluate: (snapshot: EvaluationSnapshot) => executeComponent(component, snapshot, verifiedFiles, inputs),
   });
 }
@@ -779,6 +795,7 @@ function metadata(
   },
   derivedInputs: BundleInputSources,
   files: readonly ClosureFile[],
+  compiledDependencies: readonly BundleCompiledDependency[],
 ): ComponentMetadataWire {
   const inputs: Record<string, InputMetadataWire> = {};
   for (const [name, declaration] of Object.entries(definition.config).sort(([left], [right]) => compareCodeUnits(left, right))) {
@@ -794,12 +811,55 @@ function metadata(
       ? Object.freeze({ component: source.component, output: source.output, optional: source.optional })
       : Object.freeze({ source: "config" as const, schema: Object.freeze({ kind: "artifact" as const }) });
   }
+  const dependencies = compiledDependencies
+    .map((dependency): CompiledDependencyWire => {
+      const producer = getComponentDefinition(dependency.component);
+      const consumedOutputs = [...new Set(dependency.consumedOutputs)].sort(compareCodeUnits);
+      for (const outputName of consumedOutputs) {
+        if (!(outputName in producer.outputs)) {
+          throw diagnostic(
+            "HENOSIS_BUNDLE_CONTRACT_OUTPUT",
+            `Bundler recorded ${producer.name}.outputs.${outputName}, but the resolved producer does not declare it.`,
+            "Rebuild after updating the consumer to use an output declared by the resolved producer.",
+          );
+        }
+      }
+      return Object.freeze({
+        component: producer.name,
+        revision: dependency.revision,
+        outputs: outputMetadata(producer.outputs),
+        consumedOutputs: Object.freeze(consumedOutputs),
+      });
+    })
+    .sort((left, right) => compareCodeUnits(left.component, right.component));
+  for (let index = 1; index < dependencies.length; index += 1) {
+    if (dependencies[index - 1]?.component === dependencies[index]?.component) {
+      throw diagnostic(
+        "HENOSIS_BUNDLE_CONTRACT_DUPLICATE",
+        `Bundler supplied contract facts for ${dependencies[index]?.component} more than once.`,
+        "Aggregate consumed outputs per producer before calling createBundle().",
+      );
+    }
+  }
   return Object.freeze({
     name: definition.name,
     inputs: Object.freeze(inputs),
-    outputs: Object.freeze(Object.fromEntries(Object.entries(definition.outputs).map(([name, declaration]) => [name, Object.freeze({ availability: declaration.availability, optional: declaration.optional, schema: schemaWire(declaration.schema) })]))),
+    outputs: outputMetadata(definition.outputs),
+    compiledDependencies: Object.freeze(dependencies),
     files,
   });
+}
+
+function outputMetadata(outputs: OutputDeclarations): Readonly<Record<string, OutputMetadataWire>> {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(outputs)
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([name, declaration]) => [name, Object.freeze({
+        availability: declaration.availability,
+        optional: declaration.optional,
+        schema: schemaWire(declaration.schema),
+      })]),
+  ));
 }
 
 function normalizeConfigDeclaration(declaration: Schema<unknown> | ConfigDeclaration<unknown>): {

@@ -68,11 +68,25 @@ describe("restored authoring surface", () => {
   it("derives imported outputs and config into unchanged wire metadata", () => {
     const component = consumer();
 
-    expect(createBundle(component, [], consumerInputs).component.inputs).toEqual({
+    const bundled = createBundle(component, [], consumerInputs, [{
+      component: producer,
+      revision: "0123456789abcdef",
+      consumedOutputs: ["preview", "endpoint", "endpoint"],
+    }]);
+    expect(bundled.component.inputs).toEqual({
       label: { source: "config", schema: { kind: "string" }, default: { value: "consumer" } },
       producerEndpoint: { component: "producer", output: "endpoint", optional: false },
       producerPreview: { component: "producer", output: "preview", optional: true },
     });
+    expect(bundled.component.compiledDependencies).toEqual([{
+      component: "producer",
+      revision: "0123456789abcdef",
+      consumedOutputs: ["endpoint", "preview"],
+      outputs: {
+        endpoint: { availability: "observed", optional: false, schema: { kind: "url" } },
+        preview: { availability: "observed", optional: true, schema: { kind: "url" } },
+      },
+    }]);
     expect(new FakeHost(component, [], consumerInputs)
       .available("producerEndpoint", "https://api.example")
       .absent("producerPreview")

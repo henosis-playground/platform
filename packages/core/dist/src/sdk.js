@@ -91,13 +91,13 @@ export function defineComponent(spec) {
 export function getComponentDefinition(component) {
     return component[componentSymbol];
 }
-export function createBundle(component, closureFiles = [], derivedInputs = {}) {
+export function createBundle(component, closureFiles = [], derivedInputs = {}, compiledDependencies = []) {
     const definition = getComponentDefinition(component);
     const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
     const inputs = verifyDerivedInputs(definition, derivedInputs);
     return Object.freeze({
         protocolVersion: 1,
-        component: metadata(definition, inputs, verifiedFiles),
+        component: metadata(definition, inputs, verifiedFiles, compiledDependencies),
         evaluate: (snapshot) => executeComponent(component, snapshot, verifiedFiles, inputs),
     });
 }
@@ -482,7 +482,7 @@ function objectsAtPath(root, pointer) {
     }
     return values.filter((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry));
 }
-function metadata(definition, derivedInputs, files) {
+function metadata(definition, derivedInputs, files, compiledDependencies) {
     const inputs = {};
     for (const [name, declaration] of Object.entries(definition.config).sort(([left], [right]) => compareCodeUnits(left, right))) {
         const normalized = normalizeConfigDeclaration(declaration);
@@ -497,12 +497,44 @@ function metadata(definition, derivedInputs, files) {
             ? Object.freeze({ component: source.component, output: source.output, optional: source.optional })
             : Object.freeze({ source: "config", schema: Object.freeze({ kind: "artifact" }) });
     }
+    const dependencies = compiledDependencies
+        .map((dependency) => {
+        const producer = getComponentDefinition(dependency.component);
+        const consumedOutputs = [...new Set(dependency.consumedOutputs)].sort(compareCodeUnits);
+        for (const outputName of consumedOutputs) {
+            if (!(outputName in producer.outputs)) {
+                throw diagnostic("HENOSIS_BUNDLE_CONTRACT_OUTPUT", `Bundler recorded ${producer.name}.outputs.${outputName}, but the resolved producer does not declare it.`, "Rebuild after updating the consumer to use an output declared by the resolved producer.");
+            }
+        }
+        return Object.freeze({
+            component: producer.name,
+            revision: dependency.revision,
+            outputs: outputMetadata(producer.outputs),
+            consumedOutputs: Object.freeze(consumedOutputs),
+        });
+    })
+        .sort((left, right) => compareCodeUnits(left.component, right.component));
+    for (let index = 1; index < dependencies.length; index += 1) {
+        if (dependencies[index - 1]?.component === dependencies[index]?.component) {
+            throw diagnostic("HENOSIS_BUNDLE_CONTRACT_DUPLICATE", `Bundler supplied contract facts for ${dependencies[index]?.component} more than once.`, "Aggregate consumed outputs per producer before calling createBundle().");
+        }
+    }
     return Object.freeze({
         name: definition.name,
         inputs: Object.freeze(inputs),
-        outputs: Object.freeze(Object.fromEntries(Object.entries(definition.outputs).map(([name, declaration]) => [name, Object.freeze({ availability: declaration.availability, optional: declaration.optional, schema: schemaWire(declaration.schema) })]))),
+        outputs: outputMetadata(definition.outputs),
+        compiledDependencies: Object.freeze(dependencies),
         files,
     });
+}
+function outputMetadata(outputs) {
+    return Object.freeze(Object.fromEntries(Object.entries(outputs)
+        .sort(([left], [right]) => compareCodeUnits(left, right))
+        .map(([name, declaration]) => [name, Object.freeze({
+            availability: declaration.availability,
+            optional: declaration.optional,
+            schema: schemaWire(declaration.schema),
+        })])));
 }
 function normalizeConfigDeclaration(declaration) {
     return schemaSymbol in declaration
