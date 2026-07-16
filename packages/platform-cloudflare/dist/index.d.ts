@@ -1,9 +1,9 @@
-import { type ArtifactReference, type BuildContext, type EmittedResource } from "@henosis/core";
+import { type BuildContext, type EmittedResource, type ResourceDefinition } from "@henosis/core";
 export interface SourceRef {
-    /** Built worker module held in the workload artifact store. */
-    readonly entry: ArtifactReference<"cloudflare-worker">;
-    /** Optional built static-assets archive held in the workload artifact store. */
-    readonly assets?: ArtifactReference<"static-assets">;
+    /** Repository-relative Worker entry module. Henosis builds and binds its digest. */
+    readonly entry: string;
+    /** Optional repository-relative static-assets directory. */
+    readonly assets?: string;
 }
 export interface WorkerBody {
     readonly source: SourceRef;
@@ -19,12 +19,7 @@ export declare const workerOutputs: {
     readonly deploymentId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
     readonly versionId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 };
-export declare const worker: import("@henosis/core").ResourceDefinition<WorkerBody, {
-    readonly url: import("@henosis/core").OutputDeclaration<string, false, "observed">;
-    readonly workerName: import("@henosis/core").OutputDeclaration<string, false, "observed">;
-    readonly deploymentId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
-    readonly versionId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
-}>;
+export declare const worker: ResourceDefinition<WorkerBody, typeof workerOutputs>;
 export interface TunnelBody {
     readonly origin: {
         readonly host: string;
@@ -37,7 +32,7 @@ export declare const tunnelOutputs: {
     readonly privateHostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
     readonly tokenRef: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 };
-export declare const tunnel: import("@henosis/core").ResourceDefinition<TunnelBody, {
+export declare const tunnel: ResourceDefinition<TunnelBody, {
     readonly tunnelId: import("@henosis/core").OutputDeclaration<string, false, "observed">;
     readonly tunnelName: import("@henosis/core").OutputDeclaration<string, false, "observed">;
     readonly privateHostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
@@ -51,7 +46,7 @@ export interface RouteBody {
 export declare const routeOutputs: {
     readonly hostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 };
-export declare const route: import("@henosis/core").ResourceDefinition<RouteBody, {
+export declare const route: ResourceDefinition<RouteBody, {
     readonly hostname: import("@henosis/core").OutputDeclaration<string, false, "observed">;
 }>;
 /** Emit a Worker while retaining its precise output-handle type. */

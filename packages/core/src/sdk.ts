@@ -14,16 +14,28 @@ export interface Schema<Value> {
   readonly kind: SchemaWire["kind"];
   readonly [schemaValue]?: Value;
   readonly [schemaSymbol]: SchemaWire;
+  default(value: Value): ConfigDeclaration<Value>;
+}
+
+export interface ConfigDeclaration<Value> {
+  readonly schema: Schema<Value>;
+  readonly default: Value;
 }
 
 export type InferSchema<S extends Schema<unknown>> = S extends Schema<infer Value> ? Value : never;
 export type SchemaFields = Readonly<Record<string, Schema<unknown>>>;
+export type ConfigDeclarations = Readonly<Record<string, Schema<unknown> | ConfigDeclaration<unknown>>>;
 
 function makeSchema<Value>(wire: SchemaWire): Schema<Value> {
-  return Object.freeze({ kind: wire.kind, [schemaSymbol]: wire });
+  const schema = {
+    kind: wire.kind,
+    [schemaSymbol]: wire,
+    default(value: Value): ConfigDeclaration<Value> {
+      return Object.freeze({ schema: schema as Schema<Value>, default: value });
+    },
+  };
+  return Object.freeze(schema);
 }
-
-export type ArtifactDigest = `sha256:${string}`;
 
 export const value = Object.freeze({
   string: (): Schema<string> => makeSchema({ kind: "string" }),
@@ -31,7 +43,6 @@ export const value = Object.freeze({
   number: (): Schema<number> => makeSchema({ kind: "number" }),
   boolean: (): Schema<boolean> => makeSchema({ kind: "boolean" }),
   json: (): Schema<JsonValue> => makeSchema({ kind: "json" }),
-  artifactDigest: (): Schema<ArtifactDigest> => makeSchema({ kind: "artifact" }),
   array: <Element extends Schema<unknown>>(element: Element): Schema<readonly InferSchema<Element>[]> =>
     makeSchema({ kind: "array", element: schemaWire(element) }),
   object: <const Fields extends SchemaFields>(fields: Fields): Schema<{ readonly [Key in keyof Fields]: InferSchema<Fields[Key]> }> =>
@@ -84,15 +95,18 @@ const componentSymbol: unique symbol = Symbol.for("henosis.component.v1") as nev
 const outputHandleSymbol: unique symbol = Symbol.for("henosis.output-handle.v1") as never;
 const inputValueSymbol: unique symbol = Symbol("henosis.input-value") as never;
 const bindingSymbol: unique symbol = Symbol("henosis.output-binding") as never;
+const artifactSourceSymbol: unique symbol = Symbol.for("henosis.artifact-source.v1") as never;
 declare const outputValue: unique symbol;
 
-export interface OutputHandle<Value, Optional extends boolean = false> {
+export type OutputHandle<Value, Optional extends boolean = false> = {
   readonly component: string;
   readonly output: string;
   readonly optional: Optional;
+  readonly schema: Schema<Value>;
+  readonly value: Value;
   readonly [outputValue]?: Value;
   readonly [outputHandleSymbol]: true;
-}
+} & (Optional extends true ? { readonly present: boolean } : object);
 
 export type ComponentOutputs<Declarations extends OutputDeclarations> = {
   readonly [Key in keyof Declarations]: Declarations[Key] extends OutputDeclaration<infer Value, infer Optional>
@@ -100,24 +114,19 @@ export type ComponentOutputs<Declarations extends OutputDeclarations> = {
     : never;
 };
 
-export interface OutputInputDeclaration<Value, Optional extends boolean = false> {
-  readonly kind: "output";
-  readonly source: OutputHandle<Value, boolean>;
-  readonly optional: Optional;
-}
+export interface InputValue<Value> { readonly value: Value; }
 
-export interface ConfigInputDeclaration<Value> {
-  readonly kind: "config";
-  readonly schema: Schema<Value>;
-  readonly optional: false;
-  readonly default?: Value;
-}
+export type BuildConfig<Declarations extends ConfigDeclarations> = {
+  readonly [Key in keyof Declarations]: Declarations[Key] extends ConfigDeclaration<infer Value>
+    ? InputValue<Value>
+    : Declarations[Key] extends Schema<infer Value>
+      ? InputValue<Value>
+      : never;
+};
 
-export type InputDeclaration<Value, Optional extends boolean = false> =
-  | OutputInputDeclaration<Value, Optional>
-  | ConfigInputDeclaration<Value>;
+// === CONFIGURATION CLOSURE ===
 
-export type InputDeclarations = Readonly<Record<string, InputDeclaration<unknown, boolean>>>;
+export type ArtifactDigest = `sha256:${string}`;
 
 export interface ConfigFileDeclaration {
   readonly path: string;
@@ -137,61 +146,6 @@ export const config = Object.freeze({
     return Object.freeze({ path, ...(sha256 === undefined ? {} : { sha256 }) });
   },
 });
-
-export type ArtifactKind = "cloudflare-worker" | "static-assets";
-
-export interface ArtifactReference<Kind extends ArtifactKind = ArtifactKind> {
-  readonly kind: Kind;
-  readonly digest: ArtifactDigest;
-}
-
-export interface ArtifactBuildDeclaration {
-  readonly kind: ArtifactKind;
-  readonly input: string;
-  readonly path: string;
-}
-
-export const artifact = Object.freeze({
-  buildWorker(input: string, entry: string): ArtifactBuildDeclaration {
-    assertApiName(input, "artifact digest input name");
-    assertRepositoryPath(entry, "worker entry");
-    return Object.freeze({ kind: "cloudflare-worker" as const, input, path: entry });
-  },
-  buildAssets(input: string, directory: string): ArtifactBuildDeclaration {
-    assertApiName(input, "artifact digest input name");
-    assertRepositoryPath(directory, "static assets directory");
-    return Object.freeze({ kind: "static-assets" as const, input, path: directory });
-  },
-  worker(digest: ArtifactDigest): ArtifactReference<"cloudflare-worker"> {
-    assertArtifactDigest(digest, "worker artifact");
-    return Object.freeze({ kind: "cloudflare-worker" as const, digest });
-  },
-  assets(digest: ArtifactDigest): ArtifactReference<"static-assets"> {
-    assertArtifactDigest(digest, "static assets artifact");
-    return Object.freeze({ kind: "static-assets" as const, digest });
-  },
-});
-
-export const input = Object.freeze({
-  required<Value>(source: OutputHandle<Value, boolean>): OutputInputDeclaration<Value, false> {
-    return Object.freeze({ kind: "output", source, optional: false });
-  },
-  optional<Value>(source: OutputHandle<Value, true>): OutputInputDeclaration<Value, true> {
-    return Object.freeze({ kind: "output", source, optional: true });
-  },
-  config<Value>(schema: Schema<Value>, options: { readonly default?: Value } = {}): ConfigInputDeclaration<Value> {
-    return Object.freeze({ kind: "config", schema, optional: false, ...options });
-  },
-});
-
-export interface InputValue<Value> { readonly value: Value; }
-export interface OptionalInputValue<Value> extends InputValue<Value> { readonly present: boolean; }
-
-export type BuildInputs<Declarations extends InputDeclarations> = {
-  readonly [Key in keyof Declarations]: Declarations[Key] extends InputDeclaration<infer Value, infer Optional>
-    ? Optional extends true ? OptionalInputValue<Value> : InputValue<Value>
-    : never;
-};
 
 // === RESOURCES ===
 
@@ -259,7 +213,8 @@ export interface ResourceEmission {
   readonly canonical: string;
 }
 
-export interface BuildContext {
+export interface BuildContext<Config extends ConfigDeclarations = Record<never, never>> {
+  readonly config: BuildConfig<Config>;
   emit<Outputs extends OutputDeclarations>(intent: ResourceIntent<Outputs>): EmittedResource<Outputs>;
 }
 
@@ -277,73 +232,72 @@ export type BuildOutputs<Declarations extends OutputDeclarations> = {
     : never;
 };
 
-export interface ComponentSpec<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
+export interface ComponentSpec<Config extends ConfigDeclarations, Outputs extends OutputDeclarations> {
   readonly name: string;
-  readonly inputs?: Inputs;
+  readonly config?: Config;
   /** Configuration content carried in the hermetic evaluation closure. */
   readonly files?: readonly ConfigFileDeclaration[];
-  /** Frontend-only workload build declarations. Artifact bytes never enter the component bundle. */
-  readonly artifacts?: readonly ArtifactBuildDeclaration[];
   readonly outputs: Outputs;
-  readonly build: (context: BuildContext, inputs: BuildInputs<Inputs>) => BuildOutputs<Outputs>;
+  readonly build: (context: BuildContext<Config>) => BuildOutputs<Outputs>;
 }
 
-export interface ComponentDefinition<Inputs extends InputDeclarations = InputDeclarations, Outputs extends OutputDeclarations = OutputDeclarations> {
+export interface ComponentDefinition<Config extends ConfigDeclarations = ConfigDeclarations, Outputs extends OutputDeclarations = OutputDeclarations> {
   readonly protocolVersion: 1;
   readonly name: string;
-  readonly inputs: Inputs;
+  readonly config: Config;
   readonly files: readonly ConfigFileDeclaration[];
   readonly outputs: Outputs;
-  readonly build: ComponentSpec<Inputs, Outputs>["build"];
+  readonly build: ComponentSpec<Config, Outputs>["build"];
 }
 
-export interface ComponentModule<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
+export interface ComponentModule<Config extends ConfigDeclarations, Outputs extends OutputDeclarations> {
   readonly name: string;
   readonly outputs: ComponentOutputs<Outputs>;
-  readonly [componentSymbol]: ComponentDefinition<Inputs, Outputs>;
+  readonly [componentSymbol]: ComponentDefinition<Config, Outputs>;
 }
 
 export function defineComponent<
-  const Inputs extends InputDeclarations = Record<never, never>,
+  const Config extends ConfigDeclarations = Record<never, never>,
   const Outputs extends OutputDeclarations = OutputDeclarations,
->(spec: ComponentSpec<Inputs, Outputs>): ComponentModule<Inputs, Outputs> {
+>(spec: ComponentSpec<Config, Outputs>): ComponentModule<Config, Outputs> {
   assertTargetName(spec.name, "component name");
-  const inputs = Object.freeze({ ...(spec.inputs ?? {}) }) as Inputs;
+  const declarations = Object.freeze({ ...(spec.config ?? {}) }) as Config;
   const files = Object.freeze([...(spec.files ?? [])]);
   const outputs = freezeOutputs(spec.outputs);
-  for (const [name, declaration] of Object.entries(inputs)) {
-    assertApiName(name, "input name");
-    if (declaration.kind === "output") {
-      if (!isOutputHandle(declaration.source)) {
-        throw diagnostic("HENOSIS_INPUT_SOURCE", `Input ${quoted(name)} does not reference a component output.`, "Import the producer and use input.required(producer.outputs.<name>) or input.optional(...)." );
-      }
-      if (declaration.optional && !declaration.source.optional) {
-        throw diagnostic("HENOSIS_OPTIONAL_INPUT", `Input ${quoted(name)} is optional, but ${sourceLabel(name, declaration)} is required.`, "Make the producer output optional or consume it with input.required(...)." );
-      }
-    } else if ("default" in declaration) {
-      const defaultValue = snapshotJson(declaration.default, `default for config input ${name}`);
-      assertSchemaValue(declaration.schema, defaultValue, `default for config input ${name}`);
+  for (const [name, declaration] of Object.entries(declarations)) {
+    assertApiName(name, "config name");
+    const normalized = normalizeConfigDeclaration(declaration);
+    if (normalized.default !== undefined) {
+      const defaultValue = snapshotJson(normalized.default, `default for config input ${name}`);
+      assertSchemaValue(normalized.schema, defaultValue, `default for config input ${name}`);
     }
   }
-  for (const declaration of spec.artifacts ?? []) {
-    const artifactInput = inputs[declaration.input];
-    if (artifactInput?.kind !== "config" || schemaWire(artifactInput.schema).kind !== "artifact") {
-      throw diagnostic("HENOSIS_ARTIFACT_INPUT", `Artifact build for ${quoted(declaration.path)} targets input ${quoted(declaration.input)}, which is not an artifact-digest config input.`, `Declare ${declaration.input}: input.config(value.artifactDigest()).`);
-    }
-  }
-  const definition = Object.freeze({ protocolVersion: 1 as const, name: spec.name, inputs, files, outputs, build: spec.build });
+  const definition = Object.freeze({ protocolVersion: 1 as const, name: spec.name, config: declarations, files, outputs, build: spec.build });
   const handles = Object.freeze(Object.fromEntries(Object.entries(outputs).map(([name, declaration]) => [
     name,
-    Object.freeze({ component: spec.name, output: name, optional: declaration.optional, [outputHandleSymbol]: true as const }),
+    makeOutputHandle(spec.name, name, declaration),
   ]))) as ComponentOutputs<Outputs>;
   return Object.freeze({ name: spec.name, outputs: handles, [componentSymbol]: definition });
 }
 
-export function getComponentDefinition<Inputs extends InputDeclarations, Outputs extends OutputDeclarations>(
-  component: ComponentModule<Inputs, Outputs>,
-): ComponentDefinition<Inputs, Outputs> {
+export function getComponentDefinition<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(
+  component: ComponentModule<Config, Outputs>,
+): ComponentDefinition<Config, Outputs> {
   return component[componentSymbol];
 }
+
+// === BUNDLER INPUT DERIVATION ===
+
+export type ArtifactKind = "cloudflare-worker" | "static-assets";
+
+export interface ArtifactInputSource {
+  readonly source: "artifact";
+  readonly kind: ArtifactKind;
+  readonly path: string;
+}
+
+export type BundleInputSource = OutputHandle<unknown, boolean> | ArtifactInputSource;
+export type BundleInputSources = Readonly<Record<string, BundleInputSource>>;
 
 // === HOST PROTOCOL ===
 
@@ -394,33 +348,43 @@ export interface BundleModule {
   evaluate(snapshot: EvaluationSnapshot): EvaluationResult;
 }
 
-export function createBundle<Inputs extends InputDeclarations, Outputs extends OutputDeclarations>(
-  component: ComponentModule<Inputs, Outputs>,
+export function createBundle<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(
+  component: ComponentModule<Config, Outputs>,
   closureFiles: readonly ClosureFile[] = [],
+  derivedInputs: BundleInputSources = {},
 ): BundleModule {
   const definition = getComponentDefinition(component);
   const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
+  const inputs = verifyDerivedInputs(definition, derivedInputs);
   return Object.freeze({
     protocolVersion: 1 as const,
-    component: metadata(definition, verifiedFiles),
-    evaluate: (snapshot: EvaluationSnapshot) => executeComponent(component, snapshot, verifiedFiles),
+    component: metadata(definition, inputs, verifiedFiles),
+    evaluate: (snapshot: EvaluationSnapshot) => executeComponent(component, snapshot, verifiedFiles, inputs),
   });
 }
 
-export function executeComponent<Inputs extends InputDeclarations, Outputs extends OutputDeclarations>(
-  component: ComponentModule<Inputs, Outputs>,
+export function executeComponent<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(
+  component: ComponentModule<Config, Outputs>,
   snapshot: EvaluationSnapshot,
   closureFiles: readonly ClosureFile[] = [],
+  derivedInputs: BundleInputSources = {},
 ): EvaluationResult {
   if (snapshot.protocolVersion !== 1) {
     throw diagnostic("HENOSIS_PROTOCOL_VERSION", `Unsupported snapshot protocol ${String(snapshot.protocolVersion)}.`, "Use the same HOST-PROTOCOL.md version on both sides of the isolate boundary.");
   }
   const definition = getComponentDefinition(component);
+  const inputs = verifyDerivedInputs(definition, derivedInputs);
   const reads = new Set<string>();
+  const runtime = materializeInputs(definition.config, inputs, snapshot.inputs, reads);
   const sink = new ResourceSink(closureFiles);
-  const inputs = materializeInputs(definition.inputs, snapshot.inputs, reads);
+  const context = Object.freeze({
+    config: runtime.config,
+    emit: sink.emit.bind(sink),
+  }) as BuildContext<Config>;
+  const previousEvaluation = activeEvaluation;
+  activeEvaluation = runtime;
   try {
-    const result = guardDeterminism(() => definition.build(sink, inputs));
+    const result = guardDeterminism(() => definition.build(context));
     const encoded = encodeOutputs(definition.outputs, result, sink.addresses());
     return Object.freeze({
       protocolVersion: 1 as const,
@@ -436,6 +400,8 @@ export function executeComponent<Inputs extends InputDeclarations, Outputs exten
     }
     sink.abort();
     throw error;
+  } finally {
+    activeEvaluation = previousEvaluation;
   }
 }
 
@@ -493,7 +459,22 @@ export function canonicalize(input: JsonValue): JsonValue {
 
 // === EXECUTION INTERNALS ===
 
-class ResourceSink implements BuildContext {
+interface RuntimeInput {
+  readonly name: string;
+  readonly source: string;
+  readonly cell: InputSnapshotCell;
+  readonly reads: Set<string>;
+}
+
+interface ActiveEvaluation {
+  readonly config: Readonly<Record<string, InputValue<unknown>>>;
+  readonly outputs: ReadonlyMap<string, RuntimeInput>;
+  readonly artifacts: ReadonlyMap<string, RuntimeInput>;
+}
+
+let activeEvaluation: ActiveEvaluation | undefined;
+
+class ResourceSink {
   private state: "open" | "sealed" | "aborted" = "open";
   private readonly resources: ResourceEmission[] = [];
   private readonly seen = new Set<string>();
@@ -526,37 +507,96 @@ class ResourceSink implements BuildContext {
   abort(): void { this.state = "aborted"; this.resources.length = 0; this.seen.clear(); }
 }
 
-function materializeInputs<Inputs extends InputDeclarations>(
-  declarations: Inputs,
+function makeOutputHandle<Value>(
+  component: string,
+  name: string,
+  declaration: OutputDeclaration<Value, boolean>,
+): OutputHandle<Value, boolean> {
+  const handle: Record<PropertyKey, unknown> = {
+    component,
+    output: name,
+    optional: declaration.optional,
+    schema: declaration.schema,
+    [outputHandleSymbol]: true,
+  };
+  Object.defineProperty(handle, "value", {
+    enumerable: true,
+    get: () => readOutput(component, name, "reading `.value`"),
+  });
+  if (declaration.optional) {
+    Object.defineProperty(handle, "present", {
+      enumerable: true,
+      get: () => outputPresent(component, name),
+    });
+  }
+  return Object.freeze(handle) as OutputHandle<Value, boolean>;
+}
+
+function readOutput(component: string, outputName: string, operation: string): unknown {
+  const runtime = activeEvaluation?.outputs.get(sourceKey(component, outputName));
+  if (runtime === undefined) {
+    throw diagnostic("HENOSIS_UNDECLARED_IMPORT", `Build inspected ${component}.outputs.${outputName}, but the bundle did not declare that imported output.`, "Rebuild with the Henosis bundler so imported output references are derived into component.inputs metadata.");
+  }
+  return readRuntimeInput(runtime, operation);
+}
+
+function outputPresent(component: string, outputName: string): boolean {
+  const runtime = activeEvaluation?.outputs.get(sourceKey(component, outputName));
+  if (runtime === undefined) {
+    throw diagnostic("HENOSIS_UNDECLARED_IMPORT", `Build inspected ${component}.outputs.${outputName}.present, but the bundle did not declare that imported output.`, "Rebuild with the Henosis bundler so imported output references are derived into component.inputs metadata.");
+  }
+  return runtime.cell.state !== "absent";
+}
+
+function readRuntimeInput(runtime: RuntimeInput, operation: string): JsonValue {
+  runtime.reads.add(runtime.name);
+  if (runtime.cell.state === "blocked") throwBlocked(runtime.name, runtime.source, operation);
+  if (runtime.cell.state === "absent") throw diagnostic("HENOSIS_ABSENT_INPUT_READ", `Optional input ${quoted(runtime.name)} is absent, but its .value was read.`, "Branch on the imported output's .present fact before reading .value.");
+  return runtime.cell.value;
+}
+
+function materializeInputs<Config extends ConfigDeclarations>(
+  configDeclarations: Config,
+  derivedInputs: BundleInputSources,
   snapshot: Readonly<Record<string, InputSnapshotCell>>,
   reads: Set<string>,
-): BuildInputs<Inputs> {
-  const result: Record<string, InputValue<unknown> | OptionalInputValue<unknown>> = {};
-  for (const [name, declaration] of Object.entries(declarations)) {
+): ActiveEvaluation & { readonly config: BuildConfig<Config> } {
+  const configValues: Record<string, InputValue<unknown>> = {};
+  const outputs = new Map<string, RuntimeInput>();
+  const artifacts = new Map<string, RuntimeInput>();
+
+  for (const [name, declaration] of Object.entries(configDeclarations)) {
+    const normalized = normalizeConfigDeclaration(declaration);
     const cell = snapshot[name];
-    if (cell === undefined) throw diagnostic("HENOSIS_SNAPSHOT_MISSING_INPUT", `The host omitted declared input ${quoted(name)}.`, "Provide exactly one available, blocked, or absent cell for every declared input.");
-    if (cell.state === "absent" && !declaration.optional) throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Required input ${quoted(name)} (${sourceLabel(name, declaration)}) is absent.`, "Only optional producer outputs may be absent.");
+    if (cell === undefined) throw diagnostic("HENOSIS_SNAPSHOT_MISSING_INPUT", `The host omitted declared input ${quoted(name)}.`, "Provide exactly one available cell for every graph config input.");
+    if (cell.state !== "available") throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Graph config input ${quoted(name)} is ${cell.state}.`, "Config inputs must always be concrete after graph bindings and defaults are applied.");
+    const runtime = Object.freeze({ name, source: `graph config ${name}`, cell, reads });
     const handle = {
-      ...(declaration.optional ? { present: cell.state !== "absent" } : {}),
-      get value(): unknown {
-        reads.add(name);
-        if (cell.state === "blocked") throwBlocked(name, sourceLabel(name, declaration), "reading `.value`");
-        if (cell.state === "absent") throw diagnostic("HENOSIS_ABSENT_INPUT_READ", `Optional input ${quoted(name)} is absent, but its .value was read.`, `Branch on inputs.${name}.present before reading inputs.${name}.value.`);
-        return cell.value;
-      },
-      [inputValueSymbol]: Object.freeze({
-        name,
-        source: sourceLabel(name, declaration),
-        state: cell.state,
-        markRead: (): void => { reads.add(name); },
-      }),
+      get value(): unknown { return readRuntimeInput(runtime, "reading `.value`"); },
+      [inputValueSymbol]: runtime,
     };
-    result[name] = Object.freeze(handle) as InputValue<unknown>;
+    configValues[name] = Object.freeze(handle);
+    assertSchemaValue(normalized.schema, cell.value, `graph config input ${name}`);
   }
+
+  for (const [name, source] of Object.entries(derivedInputs)) {
+    const cell = snapshot[name];
+    if (cell === undefined) throw diagnostic("HENOSIS_SNAPSHOT_MISSING_INPUT", `The host omitted declared input ${quoted(name)}.`, "Build snapshots from this bundle revision's metadata.");
+    if (isOutputHandle(source)) {
+      if (cell.state === "absent" && !source.optional) throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Required input ${quoted(name)} (${source.component}.${source.output}) is absent.`, "Only optional producer outputs may be absent.");
+      outputs.set(sourceKey(source.component, source.output), Object.freeze({ name, source: `${source.component}.${source.output}`, cell, reads }));
+    } else {
+      if (cell.state !== "available") throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Artifact input ${quoted(name)} is ${cell.state}.`, "The frontend must build and bind workload artifacts before evaluation.");
+      assertSchemaValue(makeSchema({ kind: "artifact" }), cell.value, `artifact input ${name}`);
+      artifacts.set(artifactKey(source.kind, source.path), Object.freeze({ name, source: `artifact ${source.path}`, cell, reads }));
+    }
+  }
+
   for (const extra of Object.keys(snapshot)) {
-    if (!(extra in declarations)) throw diagnostic("HENOSIS_SNAPSHOT_EXTRA_INPUT", `The host supplied undeclared input ${quoted(extra)}.`, "Build snapshots from this bundle revision's metadata.");
+    if (!(extra in configDeclarations) && !(extra in derivedInputs)) throw diagnostic("HENOSIS_SNAPSHOT_EXTRA_INPUT", `The host supplied undeclared input ${quoted(extra)}.`, "Build snapshots from this bundle revision's metadata.");
   }
-  return Object.freeze(result) as BuildInputs<Inputs>;
+
+  return Object.freeze({ config: Object.freeze(configValues) as BuildConfig<Config>, outputs, artifacts });
 }
 
 function encodeOutputs(
@@ -590,16 +630,21 @@ function encodeOutputs(
 function snapshotJson(candidate: unknown, location: string): JsonValue {
   const ancestors = new Set<object>();
   const visit = (current: unknown, path: string): JsonValue => {
+    if (isRecord(current) && outputHandleSymbol in current) {
+      const handle = current as unknown as OutputHandle<unknown, boolean>;
+      readOutput(handle.component, handle.output, `serializing ${path}`);
+      throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Imported output handle ${handle.component}.outputs.${handle.output} was placed into ${path}.`, `Use ${handle.component}.outputs.${handle.output}.value. Resources are total and cannot contain handles.`);
+    }
     if (isRecord(current) && inputValueSymbol in current) {
-      const details = current[inputValueSymbol] as {
-        readonly name: string;
-        readonly source: string;
-        readonly state: InputSnapshotCell["state"];
-        markRead(): void;
-      };
-      details.markRead();
-      if (details.state === "blocked") throwBlocked(details.name, details.source, `serializing ${path}`);
-      throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Input handle ${quoted(details.name)} was placed into ${path}.`, `Use inputs.${details.name}.value. Resources are total and cannot contain handles.`);
+      const runtime = current[inputValueSymbol] as RuntimeInput;
+      readRuntimeInput(runtime, `serializing ${path}`);
+      throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Config handle ${quoted(runtime.name)} was placed into ${path}.`, `Use context.config.${runtime.name}.value. Resources are total and cannot contain handles.`);
+    }
+    if (isRecord(current) && artifactSourceSymbol in current) {
+      const source = current[artifactSourceSymbol] as { readonly kind: ArtifactKind; readonly path: string };
+      const runtime = activeEvaluation?.artifacts.get(artifactKey(source.kind, source.path));
+      if (runtime === undefined) throw diagnostic("HENOSIS_UNDECLARED_ARTIFACT", `Resource references workload source ${quoted(source.path)}, but the bundle did not declare its artifact input.`, "Rebuild with the Henosis bundler so source.entry and source.assets are built and bound automatically.");
+      return Object.freeze({ kind: source.kind, digest: readRuntimeInput(runtime, `serializing ${path}`) as string });
     }
     if (current === null || typeof current === "string" || typeof current === "boolean") return current;
     if (typeof current === "number") {
@@ -622,10 +667,35 @@ function snapshotJson(candidate: unknown, location: string): JsonValue {
 function guardDeterminism<Result>(run: () => Result): Result {
   const now = Date.now;
   const random = Math.random;
-  const forbidden = (name: string): never => { throw diagnostic("HENOSIS_NONDETERMINISTIC_API", `${name} is unavailable while evaluating a component.`, "Derive desire only from declared inputs and source constants."); };
+  const forbidden = (name: string): never => { throw diagnostic("HENOSIS_NONDETERMINISTIC_API", `${name} is unavailable while evaluating a component.`, "Derive desire only from declared config, imported outputs, and source constants."); };
   Date.now = () => forbidden("Date.now()");
   Math.random = () => forbidden("Math.random()");
   try { return run(); } finally { Date.now = now; Math.random = random; }
+}
+
+function verifyDerivedInputs(
+  definition: { readonly config: ConfigDeclarations },
+  derivedInputs: BundleInputSources,
+): BundleInputSources {
+  const seenOutputs = new Set<string>();
+  const seenArtifacts = new Set<string>();
+  const verified: Record<string, BundleInputSource> = {};
+  for (const [name, source] of Object.entries(derivedInputs).sort(([left], [right]) => compareCodeUnits(left, right))) {
+    assertApiName(name, "derived input name");
+    if (name in definition.config) throw diagnostic("HENOSIS_INPUT_NAME_COLLISION", `Derived input ${quoted(name)} collides with graph config of the same name.`, "Rename the imported component alias or config field.");
+    if (isOutputHandle(source)) {
+      const key = sourceKey(source.component, source.output);
+      if (seenOutputs.has(key)) continue;
+      seenOutputs.add(key);
+    } else {
+      assertRepositoryPath(source.path, "workload artifact source");
+      const key = artifactKey(source.kind, source.path);
+      if (seenArtifacts.has(key)) continue;
+      seenArtifacts.add(key);
+    }
+    verified[name] = source;
+  }
+  return Object.freeze(verified);
 }
 
 function verifyClosureFiles(
@@ -698,30 +768,47 @@ function objectsAtPath(root: JsonValue, pointer: string): Record<string, JsonVal
     }
     values = next;
   }
-  return values.filter((value): value is Record<string, JsonValue> => value !== null && typeof value === "object" && !Array.isArray(value));
+  return values.filter((entry): entry is Record<string, JsonValue> => entry !== null && typeof entry === "object" && !Array.isArray(entry));
 }
 
-function metadata(definition: {
-  readonly name: string;
-  readonly inputs: InputDeclarations;
-  readonly outputs: OutputDeclarations;
-}, files: readonly ClosureFile[]): ComponentMetadataWire {
+function metadata(
+  definition: {
+    readonly name: string;
+    readonly config: ConfigDeclarations;
+    readonly outputs: OutputDeclarations;
+  },
+  derivedInputs: BundleInputSources,
+  files: readonly ClosureFile[],
+): ComponentMetadataWire {
+  const inputs: Record<string, InputMetadataWire> = {};
+  for (const [name, declaration] of Object.entries(definition.config).sort(([left], [right]) => compareCodeUnits(left, right))) {
+    const normalized = normalizeConfigDeclaration(declaration);
+    inputs[name] = Object.freeze({
+      source: "config" as const,
+      schema: schemaWire(normalized.schema),
+      ...(normalized.default === undefined ? {} : { default: Object.freeze({ value: snapshotJson(normalized.default, `default for config input ${name}`) }) }),
+    });
+  }
+  for (const [name, source] of Object.entries(derivedInputs)) {
+    inputs[name] = isOutputHandle(source)
+      ? Object.freeze({ component: source.component, output: source.output, optional: source.optional })
+      : Object.freeze({ source: "config" as const, schema: Object.freeze({ kind: "artifact" as const }) });
+  }
   return Object.freeze({
     name: definition.name,
-    inputs: Object.freeze(Object.fromEntries(Object.entries(definition.inputs).map(([name, declaration]) => {
-      if (declaration.kind === "output") {
-        return [name, Object.freeze({ component: declaration.source.component, output: declaration.source.output, optional: declaration.optional })];
-      }
-      const config = {
-        source: "config" as const,
-        schema: schemaWire(declaration.schema),
-        ...(declaration.default === undefined ? {} : { default: Object.freeze({ value: snapshotJson(declaration.default, `default for config input ${name}`) }) }),
-      };
-      return [name, Object.freeze(config)];
-    }))),
+    inputs: Object.freeze(inputs),
     outputs: Object.freeze(Object.fromEntries(Object.entries(definition.outputs).map(([name, declaration]) => [name, Object.freeze({ availability: declaration.availability, optional: declaration.optional, schema: schemaWire(declaration.schema) })]))),
     files,
   });
+}
+
+function normalizeConfigDeclaration(declaration: Schema<unknown> | ConfigDeclaration<unknown>): {
+  readonly schema: Schema<unknown>;
+  readonly default: unknown;
+} {
+  return schemaSymbol in declaration
+    ? { schema: declaration as Schema<unknown>, default: undefined }
+    : { schema: declaration.schema, default: declaration.default };
 }
 
 function freezeOutputs<Outputs extends OutputDeclarations>(outputs: Outputs): Outputs {
@@ -744,9 +831,7 @@ function assertSchemaValue(schema: Schema<unknown>, candidate: JsonValue, label:
     case "artifact": if (typeof candidate !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(candidate)) fail("artifact digest"); return;
     case "array": {
       if (!Array.isArray(candidate)) fail("array");
-      for (const child of candidate as readonly JsonValue[]) {
-        assertSchemaValue(makeSchema(wire.element), child, label);
-      }
+      for (const child of candidate as readonly JsonValue[]) assertSchemaValue(makeSchema(wire.element), child, label);
       return;
     }
     case "object": {
@@ -763,11 +848,8 @@ function assertSchemaValue(schema: Schema<unknown>, candidate: JsonValue, label:
 
 function isOutputHandle(candidate: unknown): candidate is OutputHandle<unknown, boolean> { return isRecord(candidate) && candidate[outputHandleSymbol] === true; }
 function isBinding(candidate: unknown): candidate is ObservedOutputBinding<unknown> { return isRecord(candidate) && bindingSymbol in candidate; }
-function sourceLabel(name: string, declaration: InputDeclaration<unknown, boolean>): string {
-  return declaration.kind === "output"
-    ? `${declaration.source.component}.${declaration.source.output}`
-    : `graph config ${name}`;
-}
+function sourceKey(component: string, outputName: string): string { return `${component}\0${outputName}`; }
+function artifactKey(kind: ArtifactKind, path: string): string { return `${kind}\0${path}`; }
 function assertKind(kind: string): void { if (!/^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*@[1-9][0-9]*$/u.test(kind)) throw diagnostic("HENOSIS_RESOURCE_KIND", `Invalid resource kind ${quoted(kind)}.`, "Use a versioned kind such as cloudflare/worker@1."); }
 function assertRepositoryPath(path: string, label: string): void {
   if (path.length === 0 || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
@@ -775,14 +857,12 @@ function assertRepositoryPath(path: string, label: string): void {
   }
 }
 function assertArtifactDigest(digest: string, label: string): asserts digest is ArtifactDigest {
-  if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) {
-    throw diagnostic("HENOSIS_ARTIFACT_DIGEST", `Invalid ${label} digest ${quoted(digest)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits.");
-  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) throw diagnostic("HENOSIS_ARTIFACT_DIGEST", `Invalid ${label} digest ${quoted(digest)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits.");
 }
 function assertTargetName(name: string, label: string): void { if (!/^[a-z][a-z0-9_-]{0,62}$/u.test(name)) throw diagnostic("HENOSIS_LOGICAL_NAME", `Invalid ${label} ${quoted(name)}.`, "Resource logical names and component names flow into target identifiers. Use 1-63 lowercase letters, digits, underscores, or hyphens, beginning with a letter."); }
-function assertApiName(name: string, label: string): void { if (!/^[A-Za-z][A-Za-z0-9]{0,62}$/u.test(name)) throw diagnostic("HENOSIS_API_NAME", `Invalid ${label} ${quoted(name)}.`, "Input and output names are TypeScript API surface. Use 1-63 ASCII letters or digits, beginning with a letter; idiomatic camelCase is recommended."); }
+function assertApiName(name: string, label: string): void { if (!/^[A-Za-z][A-Za-z0-9]{0,62}$/u.test(name)) throw diagnostic("HENOSIS_API_NAME", `Invalid ${label} ${quoted(name)}.`, "Config, derived input, and output names are TypeScript API surface. Use 1-63 ASCII letters or digits, beginning with a letter; idiomatic camelCase is recommended."); }
 function diagnostic(code: string, summary: string, help: string): AuthoringError { return new AuthoringError(code, summary, help); }
-function quoted(value: string): string { return JSON.stringify(value); }
+function quoted(input: string): string { return JSON.stringify(input); }
 function jsonKind(input: JsonValue): string { return input === null ? "null" : Array.isArray(input) ? "array" : typeof input; }
 function isRecord(input: unknown): input is Record<PropertyKey, unknown> { return typeof input === "object" && input !== null; }
 function sorted(values: ReadonlySet<string>): readonly string[] { return Object.freeze([...values].sort(compareCodeUnits)); }

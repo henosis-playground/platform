@@ -3,10 +3,12 @@ import { executeComponent, getComponentDefinition, } from "./sdk.js";
 export class FakeHost {
     component;
     closureFiles;
+    derivedInputs;
     cells = new Map();
-    constructor(component, closureFiles = []) {
+    constructor(component, closureFiles = [], derivedInputs = {}) {
         this.component = component;
         this.closureFiles = closureFiles;
+        this.derivedInputs = derivedInputs;
     }
     available(name, value) {
         this.cells.set(name, { state: "available", value });
@@ -22,8 +24,8 @@ export class FakeHost {
     }
     run() {
         const cells = new Map(this.cells);
-        for (const [name, declaration] of Object.entries(getComponentDefinition(this.component).inputs)) {
-            if (!cells.has(name) && declaration.kind === "config" && declaration.default !== undefined) {
+        for (const [name, declaration] of Object.entries(getComponentDefinition(this.component).config)) {
+            if (!cells.has(name) && "default" in declaration) {
                 cells.set(name, { state: "available", value: declaration.default });
             }
         }
@@ -39,7 +41,7 @@ export class FakeHost {
         };
         let result;
         try {
-            result = executeComponent(this.component, snapshot, this.closureFiles);
+            result = executeComponent(this.component, snapshot, this.closureFiles, this.derivedInputs);
         }
         finally {
             if (previousMarker === undefined)

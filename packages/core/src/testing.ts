@@ -1,12 +1,13 @@
 import {
   executeComponent,
   getComponentDefinition,
+  type BundleInputSources,
   type ClosureFile,
   type ComponentModule,
+  type ConfigDeclarations,
   type EvaluationResult,
   type EvaluationSnapshot,
   type HostBlockedDetail,
-  type InputDeclarations,
   type InputSnapshotCell,
   type JsonValue,
   type OutputDeclarations,
@@ -14,35 +15,36 @@ import {
 
 /** Pure in-process implementation of the Rust host's evaluation loop. */
 export class FakeHost<
-  Inputs extends InputDeclarations,
+  Config extends ConfigDeclarations,
   Outputs extends OutputDeclarations,
 > {
   private readonly cells = new Map<string, InputSnapshotCell>();
 
   constructor(
-    readonly component: ComponentModule<Inputs, Outputs>,
+    readonly component: ComponentModule<Config, Outputs>,
     private readonly closureFiles: readonly ClosureFile[] = [],
+    private readonly derivedInputs: BundleInputSources = {},
   ) {}
 
-  available(name: keyof Inputs & string, value: JsonValue): this {
+  available(name: string, value: JsonValue): this {
     this.cells.set(name, { state: "available", value });
     return this;
   }
 
-  blocked(name: keyof Inputs & string): this {
+  blocked(name: string): this {
     this.cells.set(name, { state: "blocked" });
     return this;
   }
 
-  absent(name: keyof Inputs & string): this {
+  absent(name: string): this {
     this.cells.set(name, { state: "absent" });
     return this;
   }
 
   run(): EvaluationResult {
     const cells = new Map(this.cells);
-    for (const [name, declaration] of Object.entries(getComponentDefinition(this.component).inputs)) {
-      if (!cells.has(name) && declaration.kind === "config" && declaration.default !== undefined) {
+    for (const [name, declaration] of Object.entries(getComponentDefinition(this.component).config)) {
+      if (!cells.has(name) && "default" in declaration) {
         cells.set(name, { state: "available", value: declaration.default as JsonValue });
       }
     }
@@ -61,7 +63,7 @@ export class FakeHost<
 
     let result: EvaluationResult;
     try {
-      result = executeComponent(this.component, snapshot, this.closureFiles);
+      result = executeComponent(this.component, snapshot, this.closureFiles, this.derivedInputs);
     } finally {
       if (previousMarker === undefined) delete hostGlobal.__henosis_mark_blocked;
       else hostGlobal.__henosis_mark_blocked = previousMarker;

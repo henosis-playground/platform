@@ -1,13 +1,14 @@
-import { type ClosureFile, type ComponentModule, type EvaluationResult, type InputDeclarations, type JsonValue, type OutputDeclarations } from "./sdk.js";
+import { type BundleInputSources, type ClosureFile, type ComponentModule, type ConfigDeclarations, type EvaluationResult, type JsonValue, type OutputDeclarations } from "./sdk.js";
 /** Pure in-process implementation of the Rust host's evaluation loop. */
-export declare class FakeHost<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
-    readonly component: ComponentModule<Inputs, Outputs>;
+export declare class FakeHost<Config extends ConfigDeclarations, Outputs extends OutputDeclarations> {
+    readonly component: ComponentModule<Config, Outputs>;
     private readonly closureFiles;
+    private readonly derivedInputs;
     private readonly cells;
-    constructor(component: ComponentModule<Inputs, Outputs>, closureFiles?: readonly ClosureFile[]);
-    available(name: keyof Inputs & string, value: JsonValue): this;
-    blocked(name: keyof Inputs & string): this;
-    absent(name: keyof Inputs & string): this;
+    constructor(component: ComponentModule<Config, Outputs>, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources);
+    available(name: string, value: JsonValue): this;
+    blocked(name: string): this;
+    absent(name: string): this;
     run(): EvaluationResult;
 }
 //# sourceMappingURL=testing.d.ts.map

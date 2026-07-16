@@ -16,17 +16,21 @@ export interface Schema<Value> {
     readonly kind: SchemaWire["kind"];
     readonly [schemaValue]?: Value;
     readonly [schemaSymbol]: SchemaWire;
+    default(value: Value): ConfigDeclaration<Value>;
+}
+export interface ConfigDeclaration<Value> {
+    readonly schema: Schema<Value>;
+    readonly default: Value;
 }
 export type InferSchema<S extends Schema<unknown>> = S extends Schema<infer Value> ? Value : never;
 export type SchemaFields = Readonly<Record<string, Schema<unknown>>>;
-export type ArtifactDigest = `sha256:${string}`;
+export type ConfigDeclarations = Readonly<Record<string, Schema<unknown> | ConfigDeclaration<unknown>>>;
 export declare const value: Readonly<{
     string: () => Schema<string>;
     url: () => Schema<string>;
     number: () => Schema<number>;
     boolean: () => Schema<boolean>;
     json: () => Schema<JsonValue>;
-    artifactDigest: () => Schema<ArtifactDigest>;
     array: <Element extends Schema<unknown>>(element: Element) => Schema<readonly InferSchema<Element>[]>;
     object: <const Fields extends SchemaFields>(fields: Fields) => Schema<{ readonly [Key in keyof Fields]: InferSchema<Fields[Key]>; }>;
 }>;
@@ -48,29 +52,27 @@ declare const componentSymbol: unique symbol;
 declare const outputHandleSymbol: unique symbol;
 declare const bindingSymbol: unique symbol;
 declare const outputValue: unique symbol;
-export interface OutputHandle<Value, Optional extends boolean = false> {
+export type OutputHandle<Value, Optional extends boolean = false> = {
     readonly component: string;
     readonly output: string;
     readonly optional: Optional;
+    readonly schema: Schema<Value>;
+    readonly value: Value;
     readonly [outputValue]?: Value;
     readonly [outputHandleSymbol]: true;
-}
+} & (Optional extends true ? {
+    readonly present: boolean;
+} : object);
 export type ComponentOutputs<Declarations extends OutputDeclarations> = {
     readonly [Key in keyof Declarations]: Declarations[Key] extends OutputDeclaration<infer Value, infer Optional> ? OutputHandle<Value, Optional> : never;
 };
-export interface OutputInputDeclaration<Value, Optional extends boolean = false> {
-    readonly kind: "output";
-    readonly source: OutputHandle<Value, boolean>;
-    readonly optional: Optional;
+export interface InputValue<Value> {
+    readonly value: Value;
 }
-export interface ConfigInputDeclaration<Value> {
-    readonly kind: "config";
-    readonly schema: Schema<Value>;
-    readonly optional: false;
-    readonly default?: Value;
-}
-export type InputDeclaration<Value, Optional extends boolean = false> = OutputInputDeclaration<Value, Optional> | ConfigInputDeclaration<Value>;
-export type InputDeclarations = Readonly<Record<string, InputDeclaration<unknown, boolean>>>;
+export type BuildConfig<Declarations extends ConfigDeclarations> = {
+    readonly [Key in keyof Declarations]: Declarations[Key] extends ConfigDeclaration<infer Value> ? InputValue<Value> : Declarations[Key] extends Schema<infer Value> ? InputValue<Value> : never;
+};
+export type ArtifactDigest = `sha256:${string}`;
 export interface ConfigFileDeclaration {
     readonly path: string;
     /** Optional author assertion. The bundler always computes the closure digest. */
@@ -83,38 +85,6 @@ export interface ClosureFile {
 export declare const config: Readonly<{
     file(path: string, sha256?: ArtifactDigest): ConfigFileDeclaration;
 }>;
-export type ArtifactKind = "cloudflare-worker" | "static-assets";
-export interface ArtifactReference<Kind extends ArtifactKind = ArtifactKind> {
-    readonly kind: Kind;
-    readonly digest: ArtifactDigest;
-}
-export interface ArtifactBuildDeclaration {
-    readonly kind: ArtifactKind;
-    readonly input: string;
-    readonly path: string;
-}
-export declare const artifact: Readonly<{
-    buildWorker(input: string, entry: string): ArtifactBuildDeclaration;
-    buildAssets(input: string, directory: string): ArtifactBuildDeclaration;
-    worker(digest: ArtifactDigest): ArtifactReference<"cloudflare-worker">;
-    assets(digest: ArtifactDigest): ArtifactReference<"static-assets">;
-}>;
-export declare const input: Readonly<{
-    required<Value>(source: OutputHandle<Value, boolean>): OutputInputDeclaration<Value, false>;
-    optional<Value>(source: OutputHandle<Value, true>): OutputInputDeclaration<Value, true>;
-    config<Value>(schema: Schema<Value>, options?: {
-        readonly default?: Value;
-    }): ConfigInputDeclaration<Value>;
-}>;
-export interface InputValue<Value> {
-    readonly value: Value;
-}
-export interface OptionalInputValue<Value> extends InputValue<Value> {
-    readonly present: boolean;
-}
-export type BuildInputs<Declarations extends InputDeclarations> = {
-    readonly [Key in keyof Declarations]: Declarations[Key] extends InputDeclaration<infer Value, infer Optional> ? Optional extends true ? OptionalInputValue<Value> : InputValue<Value> : never;
-};
 export interface ConfigFileField {
     /** RFC 6901-like path to each object containing a configuration-file reference. */
     readonly references: string;
@@ -157,37 +127,44 @@ export interface ResourceEmission {
     readonly body: JsonValue;
     readonly canonical: string;
 }
-export interface BuildContext {
+export interface BuildContext<Config extends ConfigDeclarations = Record<never, never>> {
+    readonly config: BuildConfig<Config>;
     emit<Outputs extends OutputDeclarations>(intent: ResourceIntent<Outputs>): EmittedResource<Outputs>;
 }
 export type BuildOutputs<Declarations extends OutputDeclarations> = {
     readonly [Key in keyof Declarations]: Declarations[Key] extends OutputDeclaration<infer Value, infer Optional, infer Availability> ? Availability extends "observed" ? Optional extends true ? ObservedOutputBinding<Value> | undefined : ObservedOutputBinding<Value> : Optional extends true ? Value | undefined : Value : never;
 };
-export interface ComponentSpec<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
+export interface ComponentSpec<Config extends ConfigDeclarations, Outputs extends OutputDeclarations> {
     readonly name: string;
-    readonly inputs?: Inputs;
+    readonly config?: Config;
     /** Configuration content carried in the hermetic evaluation closure. */
     readonly files?: readonly ConfigFileDeclaration[];
-    /** Frontend-only workload build declarations. Artifact bytes never enter the component bundle. */
-    readonly artifacts?: readonly ArtifactBuildDeclaration[];
     readonly outputs: Outputs;
-    readonly build: (context: BuildContext, inputs: BuildInputs<Inputs>) => BuildOutputs<Outputs>;
+    readonly build: (context: BuildContext<Config>) => BuildOutputs<Outputs>;
 }
-export interface ComponentDefinition<Inputs extends InputDeclarations = InputDeclarations, Outputs extends OutputDeclarations = OutputDeclarations> {
+export interface ComponentDefinition<Config extends ConfigDeclarations = ConfigDeclarations, Outputs extends OutputDeclarations = OutputDeclarations> {
     readonly protocolVersion: 1;
     readonly name: string;
-    readonly inputs: Inputs;
+    readonly config: Config;
     readonly files: readonly ConfigFileDeclaration[];
     readonly outputs: Outputs;
-    readonly build: ComponentSpec<Inputs, Outputs>["build"];
+    readonly build: ComponentSpec<Config, Outputs>["build"];
 }
-export interface ComponentModule<Inputs extends InputDeclarations, Outputs extends OutputDeclarations> {
+export interface ComponentModule<Config extends ConfigDeclarations, Outputs extends OutputDeclarations> {
     readonly name: string;
     readonly outputs: ComponentOutputs<Outputs>;
-    readonly [componentSymbol]: ComponentDefinition<Inputs, Outputs>;
+    readonly [componentSymbol]: ComponentDefinition<Config, Outputs>;
 }
-export declare function defineComponent<const Inputs extends InputDeclarations = Record<never, never>, const Outputs extends OutputDeclarations = OutputDeclarations>(spec: ComponentSpec<Inputs, Outputs>): ComponentModule<Inputs, Outputs>;
-export declare function getComponentDefinition<Inputs extends InputDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Inputs, Outputs>): ComponentDefinition<Inputs, Outputs>;
+export declare function defineComponent<const Config extends ConfigDeclarations = Record<never, never>, const Outputs extends OutputDeclarations = OutputDeclarations>(spec: ComponentSpec<Config, Outputs>): ComponentModule<Config, Outputs>;
+export declare function getComponentDefinition<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>): ComponentDefinition<Config, Outputs>;
+export type ArtifactKind = "cloudflare-worker" | "static-assets";
+export interface ArtifactInputSource {
+    readonly source: "artifact";
+    readonly kind: ArtifactKind;
+    readonly path: string;
+}
+export type BundleInputSource = OutputHandle<unknown, boolean> | ArtifactInputSource;
+export type BundleInputSources = Readonly<Record<string, BundleInputSource>>;
 export type InputSnapshotCell = {
     readonly state: "available";
     readonly value: JsonValue;
@@ -247,8 +224,8 @@ export interface BundleModule {
     readonly component: ComponentMetadataWire;
     evaluate(snapshot: EvaluationSnapshot): EvaluationResult;
 }
-export declare function createBundle<Inputs extends InputDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Inputs, Outputs>, closureFiles?: readonly ClosureFile[]): BundleModule;
-export declare function executeComponent<Inputs extends InputDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Inputs, Outputs>, snapshot: EvaluationSnapshot, closureFiles?: readonly ClosureFile[]): EvaluationResult;
+export declare function createBundle<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources): BundleModule;
+export declare function executeComponent<Config extends ConfigDeclarations, Outputs extends OutputDeclarations>(component: ComponentModule<Config, Outputs>, snapshot: EvaluationSnapshot, closureFiles?: readonly ClosureFile[], derivedInputs?: BundleInputSources): EvaluationResult;
 export declare class AuthoringError extends Error {
     readonly code: string;
     readonly summary: string;

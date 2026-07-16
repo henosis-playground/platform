@@ -1,7 +1,14 @@
 // === VALUES ===
 const schemaSymbol = Symbol("henosis.schema");
 function makeSchema(wire) {
-    return Object.freeze({ kind: wire.kind, [schemaSymbol]: wire });
+    const schema = {
+        kind: wire.kind,
+        [schemaSymbol]: wire,
+        default(value) {
+            return Object.freeze({ schema: schema, default: value });
+        },
+    };
+    return Object.freeze(schema);
 }
 export const value = Object.freeze({
     string: () => makeSchema({ kind: "string" }),
@@ -9,7 +16,6 @@ export const value = Object.freeze({
     number: () => makeSchema({ kind: "number" }),
     boolean: () => makeSchema({ kind: "boolean" }),
     json: () => makeSchema({ kind: "json" }),
-    artifactDigest: () => makeSchema({ kind: "artifact" }),
     array: (element) => makeSchema({ kind: "array", element: schemaWire(element) }),
     object: (fields) => makeSchema({
         kind: "object",
@@ -39,43 +45,13 @@ const componentSymbol = Symbol.for("henosis.component.v1");
 const outputHandleSymbol = Symbol.for("henosis.output-handle.v1");
 const inputValueSymbol = Symbol("henosis.input-value");
 const bindingSymbol = Symbol("henosis.output-binding");
+const artifactSourceSymbol = Symbol.for("henosis.artifact-source.v1");
 export const config = Object.freeze({
     file(path, sha256) {
         assertRepositoryPath(path, "configuration file");
         if (sha256 !== undefined)
             assertArtifactDigest(sha256, `configuration file ${quoted(path)}`);
         return Object.freeze({ path, ...(sha256 === undefined ? {} : { sha256 }) });
-    },
-});
-export const artifact = Object.freeze({
-    buildWorker(input, entry) {
-        assertApiName(input, "artifact digest input name");
-        assertRepositoryPath(entry, "worker entry");
-        return Object.freeze({ kind: "cloudflare-worker", input, path: entry });
-    },
-    buildAssets(input, directory) {
-        assertApiName(input, "artifact digest input name");
-        assertRepositoryPath(directory, "static assets directory");
-        return Object.freeze({ kind: "static-assets", input, path: directory });
-    },
-    worker(digest) {
-        assertArtifactDigest(digest, "worker artifact");
-        return Object.freeze({ kind: "cloudflare-worker", digest });
-    },
-    assets(digest) {
-        assertArtifactDigest(digest, "static assets artifact");
-        return Object.freeze({ kind: "static-assets", digest });
-    },
-});
-export const input = Object.freeze({
-    required(source) {
-        return Object.freeze({ kind: "output", source, optional: false });
-    },
-    optional(source) {
-        return Object.freeze({ kind: "output", source, optional: true });
-    },
-    config(schema, options = {}) {
-        return Object.freeze({ kind: "config", schema, optional: false, ...options });
     },
 });
 export function defineResource(spec) {
@@ -94,59 +70,54 @@ export function defineResource(spec) {
 }
 export function defineComponent(spec) {
     assertTargetName(spec.name, "component name");
-    const inputs = Object.freeze({ ...(spec.inputs ?? {}) });
+    const declarations = Object.freeze({ ...(spec.config ?? {}) });
     const files = Object.freeze([...(spec.files ?? [])]);
     const outputs = freezeOutputs(spec.outputs);
-    for (const [name, declaration] of Object.entries(inputs)) {
-        assertApiName(name, "input name");
-        if (declaration.kind === "output") {
-            if (!isOutputHandle(declaration.source)) {
-                throw diagnostic("HENOSIS_INPUT_SOURCE", `Input ${quoted(name)} does not reference a component output.`, "Import the producer and use input.required(producer.outputs.<name>) or input.optional(...).");
-            }
-            if (declaration.optional && !declaration.source.optional) {
-                throw diagnostic("HENOSIS_OPTIONAL_INPUT", `Input ${quoted(name)} is optional, but ${sourceLabel(name, declaration)} is required.`, "Make the producer output optional or consume it with input.required(...).");
-            }
-        }
-        else if ("default" in declaration) {
-            const defaultValue = snapshotJson(declaration.default, `default for config input ${name}`);
-            assertSchemaValue(declaration.schema, defaultValue, `default for config input ${name}`);
+    for (const [name, declaration] of Object.entries(declarations)) {
+        assertApiName(name, "config name");
+        const normalized = normalizeConfigDeclaration(declaration);
+        if (normalized.default !== undefined) {
+            const defaultValue = snapshotJson(normalized.default, `default for config input ${name}`);
+            assertSchemaValue(normalized.schema, defaultValue, `default for config input ${name}`);
         }
     }
-    for (const declaration of spec.artifacts ?? []) {
-        const artifactInput = inputs[declaration.input];
-        if (artifactInput?.kind !== "config" || schemaWire(artifactInput.schema).kind !== "artifact") {
-            throw diagnostic("HENOSIS_ARTIFACT_INPUT", `Artifact build for ${quoted(declaration.path)} targets input ${quoted(declaration.input)}, which is not an artifact-digest config input.`, `Declare ${declaration.input}: input.config(value.artifactDigest()).`);
-        }
-    }
-    const definition = Object.freeze({ protocolVersion: 1, name: spec.name, inputs, files, outputs, build: spec.build });
+    const definition = Object.freeze({ protocolVersion: 1, name: spec.name, config: declarations, files, outputs, build: spec.build });
     const handles = Object.freeze(Object.fromEntries(Object.entries(outputs).map(([name, declaration]) => [
         name,
-        Object.freeze({ component: spec.name, output: name, optional: declaration.optional, [outputHandleSymbol]: true }),
+        makeOutputHandle(spec.name, name, declaration),
     ])));
     return Object.freeze({ name: spec.name, outputs: handles, [componentSymbol]: definition });
 }
 export function getComponentDefinition(component) {
     return component[componentSymbol];
 }
-export function createBundle(component, closureFiles = []) {
+export function createBundle(component, closureFiles = [], derivedInputs = {}) {
     const definition = getComponentDefinition(component);
     const verifiedFiles = verifyClosureFiles(definition.files, closureFiles);
+    const inputs = verifyDerivedInputs(definition, derivedInputs);
     return Object.freeze({
         protocolVersion: 1,
-        component: metadata(definition, verifiedFiles),
-        evaluate: (snapshot) => executeComponent(component, snapshot, verifiedFiles),
+        component: metadata(definition, inputs, verifiedFiles),
+        evaluate: (snapshot) => executeComponent(component, snapshot, verifiedFiles, inputs),
     });
 }
-export function executeComponent(component, snapshot, closureFiles = []) {
+export function executeComponent(component, snapshot, closureFiles = [], derivedInputs = {}) {
     if (snapshot.protocolVersion !== 1) {
         throw diagnostic("HENOSIS_PROTOCOL_VERSION", `Unsupported snapshot protocol ${String(snapshot.protocolVersion)}.`, "Use the same HOST-PROTOCOL.md version on both sides of the isolate boundary.");
     }
     const definition = getComponentDefinition(component);
+    const inputs = verifyDerivedInputs(definition, derivedInputs);
     const reads = new Set();
+    const runtime = materializeInputs(definition.config, inputs, snapshot.inputs, reads);
     const sink = new ResourceSink(closureFiles);
-    const inputs = materializeInputs(definition.inputs, snapshot.inputs, reads);
+    const context = Object.freeze({
+        config: runtime.config,
+        emit: sink.emit.bind(sink),
+    });
+    const previousEvaluation = activeEvaluation;
+    activeEvaluation = runtime;
     try {
-        const result = guardDeterminism(() => definition.build(sink, inputs));
+        const result = guardDeterminism(() => definition.build(context));
         const encoded = encodeOutputs(definition.outputs, result, sink.addresses());
         return Object.freeze({
             protocolVersion: 1,
@@ -163,6 +134,9 @@ export function executeComponent(component, snapshot, closureFiles = []) {
         }
         sink.abort();
         throw error;
+    }
+    finally {
+        activeEvaluation = previousEvaluation;
     }
 }
 // === DIAGNOSTICS ===
@@ -211,7 +185,7 @@ export function canonicalize(input) {
     }
     return input;
 }
-// === EXECUTION INTERNALS ===
+let activeEvaluation;
 class ResourceSink {
     state = "open";
     resources = [];
@@ -245,38 +219,88 @@ class ResourceSink {
     }
     abort() { this.state = "aborted"; this.resources.length = 0; this.seen.clear(); }
 }
-function materializeInputs(declarations, snapshot, reads) {
-    const result = {};
-    for (const [name, declaration] of Object.entries(declarations)) {
+function makeOutputHandle(component, name, declaration) {
+    const handle = {
+        component,
+        output: name,
+        optional: declaration.optional,
+        schema: declaration.schema,
+        [outputHandleSymbol]: true,
+    };
+    Object.defineProperty(handle, "value", {
+        enumerable: true,
+        get: () => readOutput(component, name, "reading `.value`"),
+    });
+    if (declaration.optional) {
+        Object.defineProperty(handle, "present", {
+            enumerable: true,
+            get: () => outputPresent(component, name),
+        });
+    }
+    return Object.freeze(handle);
+}
+function readOutput(component, outputName, operation) {
+    const runtime = activeEvaluation?.outputs.get(sourceKey(component, outputName));
+    if (runtime === undefined) {
+        throw diagnostic("HENOSIS_UNDECLARED_IMPORT", `Build inspected ${component}.outputs.${outputName}, but the bundle did not declare that imported output.`, "Rebuild with the Henosis bundler so imported output references are derived into component.inputs metadata.");
+    }
+    return readRuntimeInput(runtime, operation);
+}
+function outputPresent(component, outputName) {
+    const runtime = activeEvaluation?.outputs.get(sourceKey(component, outputName));
+    if (runtime === undefined) {
+        throw diagnostic("HENOSIS_UNDECLARED_IMPORT", `Build inspected ${component}.outputs.${outputName}.present, but the bundle did not declare that imported output.`, "Rebuild with the Henosis bundler so imported output references are derived into component.inputs metadata.");
+    }
+    return runtime.cell.state !== "absent";
+}
+function readRuntimeInput(runtime, operation) {
+    runtime.reads.add(runtime.name);
+    if (runtime.cell.state === "blocked")
+        throwBlocked(runtime.name, runtime.source, operation);
+    if (runtime.cell.state === "absent")
+        throw diagnostic("HENOSIS_ABSENT_INPUT_READ", `Optional input ${quoted(runtime.name)} is absent, but its .value was read.`, "Branch on the imported output's .present fact before reading .value.");
+    return runtime.cell.value;
+}
+function materializeInputs(configDeclarations, derivedInputs, snapshot, reads) {
+    const configValues = {};
+    const outputs = new Map();
+    const artifacts = new Map();
+    for (const [name, declaration] of Object.entries(configDeclarations)) {
+        const normalized = normalizeConfigDeclaration(declaration);
         const cell = snapshot[name];
         if (cell === undefined)
-            throw diagnostic("HENOSIS_SNAPSHOT_MISSING_INPUT", `The host omitted declared input ${quoted(name)}.`, "Provide exactly one available, blocked, or absent cell for every declared input.");
-        if (cell.state === "absent" && !declaration.optional)
-            throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Required input ${quoted(name)} (${sourceLabel(name, declaration)}) is absent.`, "Only optional producer outputs may be absent.");
+            throw diagnostic("HENOSIS_SNAPSHOT_MISSING_INPUT", `The host omitted declared input ${quoted(name)}.`, "Provide exactly one available cell for every graph config input.");
+        if (cell.state !== "available")
+            throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Graph config input ${quoted(name)} is ${cell.state}.`, "Config inputs must always be concrete after graph bindings and defaults are applied.");
+        const runtime = Object.freeze({ name, source: `graph config ${name}`, cell, reads });
         const handle = {
-            ...(declaration.optional ? { present: cell.state !== "absent" } : {}),
-            get value() {
-                reads.add(name);
-                if (cell.state === "blocked")
-                    throwBlocked(name, sourceLabel(name, declaration), "reading `.value`");
-                if (cell.state === "absent")
-                    throw diagnostic("HENOSIS_ABSENT_INPUT_READ", `Optional input ${quoted(name)} is absent, but its .value was read.`, `Branch on inputs.${name}.present before reading inputs.${name}.value.`);
-                return cell.value;
-            },
-            [inputValueSymbol]: Object.freeze({
-                name,
-                source: sourceLabel(name, declaration),
-                state: cell.state,
-                markRead: () => { reads.add(name); },
-            }),
+            get value() { return readRuntimeInput(runtime, "reading `.value`"); },
+            [inputValueSymbol]: runtime,
         };
-        result[name] = Object.freeze(handle);
+        configValues[name] = Object.freeze(handle);
+        assertSchemaValue(normalized.schema, cell.value, `graph config input ${name}`);
+    }
+    for (const [name, source] of Object.entries(derivedInputs)) {
+        const cell = snapshot[name];
+        if (cell === undefined)
+            throw diagnostic("HENOSIS_SNAPSHOT_MISSING_INPUT", `The host omitted declared input ${quoted(name)}.`, "Build snapshots from this bundle revision's metadata.");
+        if (isOutputHandle(source)) {
+            if (cell.state === "absent" && !source.optional)
+                throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Required input ${quoted(name)} (${source.component}.${source.output}) is absent.`, "Only optional producer outputs may be absent.");
+            outputs.set(sourceKey(source.component, source.output), Object.freeze({ name, source: `${source.component}.${source.output}`, cell, reads }));
+        }
+        else {
+            if (cell.state !== "available")
+                throw diagnostic("HENOSIS_REQUIRED_INPUT_ABSENT", `Artifact input ${quoted(name)} is ${cell.state}.`, "The frontend must build and bind workload artifacts before evaluation.");
+            assertSchemaValue(makeSchema({ kind: "artifact" }), cell.value, `artifact input ${name}`);
+            artifacts.set(artifactKey(source.kind, source.path), Object.freeze({ name, source: `artifact ${source.path}`, cell, reads }));
+        }
     }
     for (const extra of Object.keys(snapshot)) {
-        if (!(extra in declarations))
+        if (!(extra in configDeclarations) && !(extra in derivedInputs))
             throw diagnostic("HENOSIS_SNAPSHOT_EXTRA_INPUT", `The host supplied undeclared input ${quoted(extra)}.`, "Build snapshots from this bundle revision's metadata.");
     }
-    return Object.freeze(result);
+    return Object.freeze({ config: Object.freeze(configValues), outputs, artifacts });
 }
 function encodeOutputs(declarations, result, emitted) {
     if (!isRecord(result))
@@ -311,12 +335,22 @@ function encodeOutputs(declarations, result, emitted) {
 function snapshotJson(candidate, location) {
     const ancestors = new Set();
     const visit = (current, path) => {
+        if (isRecord(current) && outputHandleSymbol in current) {
+            const handle = current;
+            readOutput(handle.component, handle.output, `serializing ${path}`);
+            throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Imported output handle ${handle.component}.outputs.${handle.output} was placed into ${path}.`, `Use ${handle.component}.outputs.${handle.output}.value. Resources are total and cannot contain handles.`);
+        }
         if (isRecord(current) && inputValueSymbol in current) {
-            const details = current[inputValueSymbol];
-            details.markRead();
-            if (details.state === "blocked")
-                throwBlocked(details.name, details.source, `serializing ${path}`);
-            throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Input handle ${quoted(details.name)} was placed into ${path}.`, `Use inputs.${details.name}.value. Resources are total and cannot contain handles.`);
+            const runtime = current[inputValueSymbol];
+            readRuntimeInput(runtime, `serializing ${path}`);
+            throw diagnostic("HENOSIS_INPUT_HANDLE_SERIALIZED", `Config handle ${quoted(runtime.name)} was placed into ${path}.`, `Use context.config.${runtime.name}.value. Resources are total and cannot contain handles.`);
+        }
+        if (isRecord(current) && artifactSourceSymbol in current) {
+            const source = current[artifactSourceSymbol];
+            const runtime = activeEvaluation?.artifacts.get(artifactKey(source.kind, source.path));
+            if (runtime === undefined)
+                throw diagnostic("HENOSIS_UNDECLARED_ARTIFACT", `Resource references workload source ${quoted(source.path)}, but the bundle did not declare its artifact input.`, "Rebuild with the Henosis bundler so source.entry and source.assets are built and bound automatically.");
+            return Object.freeze({ kind: source.kind, digest: readRuntimeInput(runtime, `serializing ${path}`) });
         }
         if (current === null || typeof current === "string" || typeof current === "boolean")
             return current;
@@ -347,7 +381,7 @@ function snapshotJson(candidate, location) {
 function guardDeterminism(run) {
     const now = Date.now;
     const random = Math.random;
-    const forbidden = (name) => { throw diagnostic("HENOSIS_NONDETERMINISTIC_API", `${name} is unavailable while evaluating a component.`, "Derive desire only from declared inputs and source constants."); };
+    const forbidden = (name) => { throw diagnostic("HENOSIS_NONDETERMINISTIC_API", `${name} is unavailable while evaluating a component.`, "Derive desire only from declared config, imported outputs, and source constants."); };
     Date.now = () => forbidden("Date.now()");
     Math.random = () => forbidden("Math.random()");
     try {
@@ -357,6 +391,31 @@ function guardDeterminism(run) {
         Date.now = now;
         Math.random = random;
     }
+}
+function verifyDerivedInputs(definition, derivedInputs) {
+    const seenOutputs = new Set();
+    const seenArtifacts = new Set();
+    const verified = {};
+    for (const [name, source] of Object.entries(derivedInputs).sort(([left], [right]) => compareCodeUnits(left, right))) {
+        assertApiName(name, "derived input name");
+        if (name in definition.config)
+            throw diagnostic("HENOSIS_INPUT_NAME_COLLISION", `Derived input ${quoted(name)} collides with graph config of the same name.`, "Rename the imported component alias or config field.");
+        if (isOutputHandle(source)) {
+            const key = sourceKey(source.component, source.output);
+            if (seenOutputs.has(key))
+                continue;
+            seenOutputs.add(key);
+        }
+        else {
+            assertRepositoryPath(source.path, "workload artifact source");
+            const key = artifactKey(source.kind, source.path);
+            if (seenArtifacts.has(key))
+                continue;
+            seenArtifacts.add(key);
+        }
+        verified[name] = source;
+    }
+    return Object.freeze(verified);
 }
 function verifyClosureFiles(declarations, closureFiles) {
     const sortedFiles = [...closureFiles].sort((left, right) => compareCodeUnits(left.path, right.path));
@@ -421,25 +480,34 @@ function objectsAtPath(root, pointer) {
         }
         values = next;
     }
-    return values.filter((value) => value !== null && typeof value === "object" && !Array.isArray(value));
+    return values.filter((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry));
 }
-function metadata(definition, files) {
+function metadata(definition, derivedInputs, files) {
+    const inputs = {};
+    for (const [name, declaration] of Object.entries(definition.config).sort(([left], [right]) => compareCodeUnits(left, right))) {
+        const normalized = normalizeConfigDeclaration(declaration);
+        inputs[name] = Object.freeze({
+            source: "config",
+            schema: schemaWire(normalized.schema),
+            ...(normalized.default === undefined ? {} : { default: Object.freeze({ value: snapshotJson(normalized.default, `default for config input ${name}`) }) }),
+        });
+    }
+    for (const [name, source] of Object.entries(derivedInputs)) {
+        inputs[name] = isOutputHandle(source)
+            ? Object.freeze({ component: source.component, output: source.output, optional: source.optional })
+            : Object.freeze({ source: "config", schema: Object.freeze({ kind: "artifact" }) });
+    }
     return Object.freeze({
         name: definition.name,
-        inputs: Object.freeze(Object.fromEntries(Object.entries(definition.inputs).map(([name, declaration]) => {
-            if (declaration.kind === "output") {
-                return [name, Object.freeze({ component: declaration.source.component, output: declaration.source.output, optional: declaration.optional })];
-            }
-            const config = {
-                source: "config",
-                schema: schemaWire(declaration.schema),
-                ...(declaration.default === undefined ? {} : { default: Object.freeze({ value: snapshotJson(declaration.default, `default for config input ${name}`) }) }),
-            };
-            return [name, Object.freeze(config)];
-        }))),
+        inputs: Object.freeze(inputs),
         outputs: Object.freeze(Object.fromEntries(Object.entries(definition.outputs).map(([name, declaration]) => [name, Object.freeze({ availability: declaration.availability, optional: declaration.optional, schema: schemaWire(declaration.schema) })]))),
         files,
     });
+}
+function normalizeConfigDeclaration(declaration) {
+    return schemaSymbol in declaration
+        ? { schema: declaration, default: undefined }
+        : { schema: declaration.schema, default: declaration.default };
 }
 function freezeOutputs(outputs) {
     for (const [name, declaration] of Object.entries(outputs)) {
@@ -477,9 +545,8 @@ function assertSchemaValue(schema, candidate, label) {
         case "array": {
             if (!Array.isArray(candidate))
                 fail("array");
-            for (const child of candidate) {
+            for (const child of candidate)
                 assertSchemaValue(makeSchema(wire.element), child, label);
-            }
             return;
         }
         case "object": {
@@ -497,11 +564,8 @@ function assertSchemaValue(schema, candidate, label) {
 }
 function isOutputHandle(candidate) { return isRecord(candidate) && candidate[outputHandleSymbol] === true; }
 function isBinding(candidate) { return isRecord(candidate) && bindingSymbol in candidate; }
-function sourceLabel(name, declaration) {
-    return declaration.kind === "output"
-        ? `${declaration.source.component}.${declaration.source.output}`
-        : `graph config ${name}`;
-}
+function sourceKey(component, outputName) { return `${component}\0${outputName}`; }
+function artifactKey(kind, path) { return `${kind}\0${path}`; }
 function assertKind(kind) { if (!/^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*@[1-9][0-9]*$/u.test(kind))
     throw diagnostic("HENOSIS_RESOURCE_KIND", `Invalid resource kind ${quoted(kind)}.`, "Use a versioned kind such as cloudflare/worker@1."); }
 function assertRepositoryPath(path, label) {
@@ -510,16 +574,15 @@ function assertRepositoryPath(path, label) {
     }
 }
 function assertArtifactDigest(digest, label) {
-    if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(digest))
         throw diagnostic("HENOSIS_ARTIFACT_DIGEST", `Invalid ${label} digest ${quoted(digest)}.`, "Use sha256 followed by 64 lowercase hexadecimal digits.");
-    }
 }
 function assertTargetName(name, label) { if (!/^[a-z][a-z0-9_-]{0,62}$/u.test(name))
     throw diagnostic("HENOSIS_LOGICAL_NAME", `Invalid ${label} ${quoted(name)}.`, "Resource logical names and component names flow into target identifiers. Use 1-63 lowercase letters, digits, underscores, or hyphens, beginning with a letter."); }
 function assertApiName(name, label) { if (!/^[A-Za-z][A-Za-z0-9]{0,62}$/u.test(name))
-    throw diagnostic("HENOSIS_API_NAME", `Invalid ${label} ${quoted(name)}.`, "Input and output names are TypeScript API surface. Use 1-63 ASCII letters or digits, beginning with a letter; idiomatic camelCase is recommended."); }
+    throw diagnostic("HENOSIS_API_NAME", `Invalid ${label} ${quoted(name)}.`, "Config, derived input, and output names are TypeScript API surface. Use 1-63 ASCII letters or digits, beginning with a letter; idiomatic camelCase is recommended."); }
 function diagnostic(code, summary, help) { return new AuthoringError(code, summary, help); }
-function quoted(value) { return JSON.stringify(value); }
+function quoted(input) { return JSON.stringify(input); }
 function jsonKind(input) { return input === null ? "null" : Array.isArray(input) ? "array" : typeof input; }
 function isRecord(input) { return typeof input === "object" && input !== null; }
 function sorted(values) { return Object.freeze([...values].sort(compareCodeUnits)); }

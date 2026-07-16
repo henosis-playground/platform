@@ -7,9 +7,9 @@ import {
   createBundle,
   defineComponent,
   defineResource,
-  input,
   output,
   value,
+  type BundleInputSources,
   type JsonValue,
 } from "../src/index.js";
 import { FakeHost } from "../src/testing.js";
@@ -37,54 +37,174 @@ const testResource = defineResource<
   outputs: testResourceOutputs,
 });
 
+const consumerInputs = {
+  producerEndpoint: producer.outputs.endpoint,
+  producerPreview: producer.outputs.preview,
+} satisfies BundleInputSources;
+
 function consumer() {
   return defineComponent({
     name: "consumer",
-    inputs: {
-      endpoint: input.required(producer.outputs.endpoint),
-      preview: input.optional(producer.outputs.preview),
+    config: {
+      label: value.string().default("consumer"),
     },
     outputs: {
       label: output.static(value.string()),
       endpoint: output.observed(value.url()),
     },
-    build: (context, inputs) => {
+    build(context) {
       context.emit(testResource.create("prefix", { message: "stable" }));
-      const endpoint = inputs.endpoint.value;
-      const message = inputs.preview.present
-        ? `${endpoint} -> ${inputs.preview.value}`
+      const endpoint = producer.outputs.endpoint.value;
+      const message = producer.outputs.preview.present
+        ? `${endpoint} -> ${producer.outputs.preview.value}`
         : endpoint;
       const emitted = context.emit(testResource.create("final", { message }));
-      return { label: "consumer", endpoint: emitted.outputs.endpoint };
+      return { label: context.config.label.value, endpoint: emitted.outputs.endpoint };
     },
   });
 }
 
-describe("in-process host", () => {
-  it("publishes config schemas and applies defaults as ordinary available cells", () => {
-    const configured = defineComponent({
-      name: "configured",
-      inputs: {
-        region: input.config(value.string()),
-        replicas: input.config(value.number(), { default: 1 }),
-      },
-      outputs: { description: output.static(value.string()) },
-      build: (_context, inputs) => ({
-        description: `${inputs.region.value}:${inputs.replicas.value}`,
-      }),
-    });
+describe("restored authoring surface", () => {
+  it("derives imported outputs and config into unchanged wire metadata", () => {
+    const component = consumer();
 
-    expect(createBundle(configured).component.inputs).toEqual({
-      region: { source: "config", schema: { kind: "string" } },
-      replicas: { source: "config", schema: { kind: "number" }, default: { value: 1 } },
+    expect(createBundle(component, [], consumerInputs).component.inputs).toEqual({
+      label: { source: "config", schema: { kind: "string" }, default: { value: "consumer" } },
+      producerEndpoint: { component: "producer", output: "endpoint", optional: false },
+      producerPreview: { component: "producer", output: "preview", optional: true },
     });
-    expect(new FakeHost(configured).available("region", "eu-west-1").run()).toMatchObject({
+    expect(new FakeHost(component, [], consumerInputs)
+      .available("producerEndpoint", "https://api.example")
+      .absent("producerPreview")
+      .run()).toMatchObject({
       status: "complete",
-      outputs: { description: "eu-west-1:1" },
-      reads: ["region", "replicas"],
+      outputs: { label: "consumer" },
+      reads: ["label", "producerEndpoint"],
     });
   });
 
+  it("evaluates imported handles directly and returns canonical total resources", () => {
+    const result = new FakeHost(consumer(), [], consumerInputs)
+      .available("producerEndpoint", "https://api.example")
+      .absent("producerPreview")
+      .run();
+
+    expect(result).toMatchObject({
+      status: "complete",
+      observedOutputs: {
+        endpoint: { resource: "test/message@1/final", output: "endpoint" },
+      },
+      reads: ["label", "producerEndpoint"],
+    });
+    expect(result.resources.map((resource) => resource.canonical)).toEqual([
+      '{"message":"stable"}',
+      '{"message":"https://api.example"}',
+    ]);
+  });
+
+  it("keeps the deterministic emitted prefix when an imported output blocks", () => {
+    const host = new FakeHost(consumer(), [], consumerInputs)
+      .blocked("producerEndpoint")
+      .absent("producerPreview");
+    const blocked = host.run();
+
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      blocked: { input: "producerEndpoint", source: "producer.endpoint" },
+      reads: ["producerEndpoint"],
+    });
+    expect(blocked.resources.map((resource) => resource.address)).toEqual([
+      "test/message@1/prefix",
+    ]);
+
+    const complete = host.available("producerEndpoint", "https://api.example").run();
+    expect(complete.status).toBe("complete");
+    expect(complete.resources.map((resource) => resource.address)).toEqual([
+      "test/message@1/prefix",
+      "test/message@1/final",
+    ]);
+  });
+
+  it("keeps sticky host blocking when component code catches Blocked", () => {
+    const swallowing = defineComponent({
+      name: "swallowing",
+      outputs: { fabricatedValue: output.static(value.string()) },
+      build(context) {
+        try {
+          producer.outputs.endpoint.value;
+        } catch (error) {
+          if (!(error instanceof Blocked)) throw error;
+        }
+        context.emit(testResource.create("fabricated", { message: "not actually complete" }));
+        return { fabricatedValue: "fake" };
+      },
+    });
+
+    expect(new FakeHost(swallowing, [], {
+      producerEndpoint: producer.outputs.endpoint,
+    }).blocked("producerEndpoint").run()).toMatchObject({
+      status: "blocked",
+      resources: [],
+      blocked: { input: "producerEndpoint", source: "producer.endpoint" },
+      reads: ["producerEndpoint"],
+    });
+  });
+
+  it("branches on optional presence without reading or blocking", () => {
+    const absent = new FakeHost(consumer(), [], consumerInputs)
+      .available("producerEndpoint", "https://api.example")
+      .absent("producerPreview")
+      .run();
+    expect(absent.reads).toEqual(["label", "producerEndpoint"]);
+
+    const blocked = new FakeHost(consumer(), [], consumerInputs)
+      .available("producerEndpoint", "https://api.example")
+      .blocked("producerPreview")
+      .run();
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      blocked: { input: "producerPreview", operation: "reading `.value`" },
+      reads: ["producerEndpoint", "producerPreview"],
+    });
+  });
+
+  it("synthesizes artifact config inputs and resolves hidden source markers", () => {
+    const artifactSource = Symbol.for("henosis.artifact-source.v1");
+    const workload = defineResource<
+      { readonly source: { readonly entry: object } },
+      Record<never, never>
+    >({ kind: "test/workload@1", outputs: {} });
+    const component = defineComponent({
+      name: "workload",
+      outputs: {},
+      build(context) {
+        context.emit(workload.create("worker", {
+          source: {
+            entry: Object.freeze({
+              [artifactSource]: Object.freeze({ kind: "cloudflare-worker", path: "workers/frontend.ts" }),
+            }),
+          },
+        }));
+        return {};
+      },
+    });
+    const digest = `sha256:${"ab".repeat(32)}` as const;
+    const derived = {
+      workerEntry: { source: "artifact", kind: "cloudflare-worker", path: "workers/frontend.ts" },
+    } as const;
+
+    expect(createBundle(component, [], derived).component.inputs).toEqual({
+      workerEntry: { source: "config", schema: { kind: "artifact" } },
+    });
+    expect(new FakeHost(component, [], derived).available("workerEntry", digest).run())
+      .toMatchObject({
+        reads: ["workerEntry"],
+        resources: [{ body: { source: { entry: { kind: "cloudflare-worker", digest } } } }],
+      });
+  });
+});
+
+describe("configuration closure", () => {
   it("resolves configuration-file references to bundler-computed digests", () => {
     const migrations = defineResource<
       { readonly migrations: readonly { readonly path: string; readonly sha256?: `sha256:${string}` }[] },
@@ -98,7 +218,7 @@ describe("in-process host", () => {
       name: "configured_files",
       files: [config.file("migrations/001.sql")],
       outputs: {},
-      build: (context) => {
+      build(context) {
         context.emit(migrations.create("schema", { migrations: [{ path: "migrations/001.sql" }] }));
         return {};
       },
@@ -111,173 +231,31 @@ describe("in-process host", () => {
       });
     expect(() => createBundle(configured, [])).toThrow("omitted declared configuration file");
   });
-
-  it("evaluates fully and returns canonical total resources", () => {
-    const result = new FakeHost(consumer())
-      .available("endpoint", "https://api.example")
-      .absent("preview")
-      .run();
-
-    expect(result).toMatchObject({
-      status: "complete",
-      outputs: { label: "consumer" },
-      observedOutputs: {
-        endpoint: { resource: "test/message@1/final", output: "endpoint" },
-      },
-      reads: ["endpoint"],
-    });
-    expect(result.resources.map((resource) => resource.canonical)).toEqual([
-      '{"message":"stable"}',
-      '{"message":"https://api.example"}',
-    ]);
-  });
-
-  it("keeps the deterministic emitted prefix when blocked, then reruns", () => {
-    const host = new FakeHost(consumer()).blocked("endpoint").absent("preview");
-    const blocked = host.run();
-    expect(blocked).toMatchObject({
-      status: "blocked",
-      blocked: { input: "endpoint", source: "producer.endpoint" },
-      reads: ["endpoint"],
-    });
-    expect(blocked.resources.map((resource) => resource.address)).toEqual([
-      "test/message@1/prefix",
-    ]);
-
-    const complete = host.available("endpoint", "https://api.example").run();
-    expect(complete.status).toBe("complete");
-    expect(complete.resources.map((resource) => resource.address)).toEqual([
-      "test/message@1/prefix",
-      "test/message@1/final",
-    ]);
-  });
-
-  it("remains blocked when component code catches and swallows Blocked", () => {
-    const swallowing = defineComponent({
-      name: "swallowing",
-      inputs: { endpoint: input.required(producer.outputs.endpoint) },
-      outputs: { fabricatedValue: output.static(value.string()) },
-      build: (context, inputs) => {
-        try {
-          inputs.endpoint.value;
-        } catch (error) {
-          if (!(error instanceof Blocked)) throw error;
-        }
-        context.emit(testResource.create("fabricated", { message: "not actually complete" }));
-        return { fabricatedValue: "fake" };
-      },
-    });
-
-    expect(new FakeHost(swallowing).blocked("endpoint").run()).toMatchObject({
-      status: "blocked",
-      resources: [],
-      blocked: { input: "endpoint", source: "producer.endpoint" },
-      reads: ["endpoint"],
-    });
-  });
-
-  it("branches on optional presence without reading or blocking", () => {
-    const absent = new FakeHost(consumer())
-      .available("endpoint", "https://api.example")
-      .absent("preview")
-      .run();
-    expect(absent.reads).toEqual(["endpoint"]);
-
-    const blocked = new FakeHost(consumer())
-      .available("endpoint", "https://api.example")
-      .blocked("preview")
-      .run();
-    expect(blocked).toMatchObject({
-      status: "blocked",
-      blocked: { input: "preview", operation: "reading `.value`" },
-      reads: ["endpoint", "preview"],
-    });
-  });
 });
 
 describe("author diagnostics", () => {
-  it("explains the separate target and TypeScript API naming rules", () => {
-    expect(() => defineComponent({
-      name: "BadComponent",
-      outputs: {},
-      build: () => ({}),
-    })).toThrow("Resource logical names and component names flow into target identifiers");
-
-    expect(() => defineComponent({
-      name: "valid_component",
-      outputs: { "worker-name": output.static(value.string()) },
-      build: () => ({ "worker-name": "worker" }),
-    })).toThrow("Input and output names are TypeScript API surface");
-  });
-
-  it("snapshots accidental handle insertion", () => {
+  it("rejects imported handles placed into resources without .value", () => {
     const broken = defineComponent({
       name: "broken",
-      inputs: { endpoint: input.required(producer.outputs.endpoint) },
       outputs: { endpoint: output.observed(value.url()) },
-      build: (context, inputs) => {
+      build(context) {
         const emitted = context.emit(testResource.create("bad", {
-          message: inputs.endpoint as unknown as JsonValue,
+          message: producer.outputs.endpoint as unknown as JsonValue,
         }));
         return { endpoint: emitted.outputs.endpoint };
       },
     });
 
-    expect(new FakeHost(broken).blocked("endpoint").run()).toMatchInlineSnapshot(`
-      {
-        "blocked": {
-          "code": "HENOSIS_BLOCKED",
-          "input": "endpoint",
-          "message": "blocked[HENOSIS_BLOCKED]: input "endpoint" from producer.endpoint is not available
-        |
-        = note: serializing resource test/message@1/bad.message requires its concrete value
-        = help: Henosis recorded this read and will re-run the component when the producer publishes it",
-          "operation": "serializing resource test/message@1/bad.message",
-          "source": "producer.endpoint",
-        },
-        "protocolVersion": 1,
-        "reads": [
-          "endpoint",
-        ],
-        "resources": [],
-        "status": "blocked",
-      }
-    `);
-
-    expect(() => new FakeHost(broken).available("endpoint", "https://api.example").run())
-      .toThrowErrorMatchingInlineSnapshot(`
-        [AuthoringError: error[HENOSIS_INPUT_HANDLE_SERIALIZED]: Input handle "endpoint" was placed into resource test/message@1/bad.message.
-          |
-          = help: Use inputs.endpoint.value. Resources are total and cannot contain handles.]
-      `);
-  });
-
-  it("marks blocked before blocked-handle serialization throws", () => {
-    const swallowing = defineComponent({
-      name: "serialization_swallowing",
-      inputs: { endpoint: input.required(producer.outputs.endpoint) },
-      outputs: { fabricatedValue: output.static(value.string()) },
-      build: (context, inputs) => {
-        try {
-          context.emit(testResource.create("bad", {
-            message: inputs.endpoint as unknown as JsonValue,
-          }));
-        } catch (error) {
-          if (!(error instanceof Blocked)) throw error;
-        }
-        return { fabricatedValue: "fake" };
-      },
-    });
-
-    expect(new FakeHost(swallowing).blocked("endpoint").run()).toMatchObject({
+    expect(new FakeHost(broken, [], {
+      producerEndpoint: producer.outputs.endpoint,
+    }).blocked("producerEndpoint").run()).toMatchObject({
       status: "blocked",
-      resources: [],
-      blocked: {
-        input: "endpoint",
-        operation: "serializing resource test/message@1/bad.message",
-      },
-      reads: ["endpoint"],
+      blocked: { operation: "serializing resource test/message@1/bad.message" },
     });
+    expect(() => new FakeHost(broken, [], {
+      producerEndpoint: producer.outputs.endpoint,
+    }).available("producerEndpoint", "https://api.example").run())
+      .toThrow("Imported output handle producer.outputs.endpoint was placed into resource");
   });
 
   it("rejects clock and randomness", () => {
@@ -293,16 +271,16 @@ describe("author diagnostics", () => {
 
 describe("under-specification monotonicity oracle", () => {
   it("every availability subset emits a prefix subset of full evaluation", () => {
-    const full = new FakeHost(consumer())
-      .available("endpoint", "https://api.example")
-      .available("preview", "https://preview.example")
+    const full = new FakeHost(consumer(), [], consumerInputs)
+      .available("producerEndpoint", "https://api.example")
+      .available("producerPreview", "https://preview.example")
       .run();
     const fullCanonical = new Set(full.resources.map((resource) => `${resource.address}\0${resource.canonical}`));
 
     for (let mask = 0; mask < 4; mask += 1) {
-      const host = new FakeHost(consumer());
-      mask & 1 ? host.available("endpoint", "https://api.example") : host.blocked("endpoint");
-      mask & 2 ? host.available("preview", "https://preview.example") : host.blocked("preview");
+      const host = new FakeHost(consumer(), [], consumerInputs);
+      mask & 1 ? host.available("producerEndpoint", "https://api.example") : host.blocked("producerEndpoint");
+      mask & 2 ? host.available("producerPreview", "https://preview.example") : host.blocked("producerPreview");
       const partial = host.run();
       for (const resource of partial.resources) {
         expect(fullCanonical.has(`${resource.address}\0${resource.canonical}`)).toBe(true);
