@@ -168,39 +168,51 @@ describe("restored authoring surface", () => {
     });
   });
 
-  it("synthesizes artifact config inputs and resolves hidden source markers", () => {
+  it("evaluates a service-f-shaped fixture with derived wiring and artifacts", () => {
     const artifactSource = Symbol.for("henosis.artifact-source.v1");
     const workload = defineResource<
-      { readonly source: { readonly entry: object } },
-      Record<never, never>
-    >({ kind: "test/workload@1", outputs: {} });
+      { readonly source: { readonly entry: object }; readonly vars: { readonly BACKEND_URL: string } },
+      typeof testResourceOutputs
+    >({ kind: "test/workload@1", outputs: testResourceOutputs });
     const component = defineComponent({
       name: "workload",
-      outputs: {},
+      outputs: { url: output.observed(value.url()) },
       build(context) {
-        context.emit(workload.create("worker", {
+        const deployed = context.emit(workload.create("worker", {
           source: {
             entry: Object.freeze({
               [artifactSource]: Object.freeze({ kind: "cloudflare-worker", path: "workers/frontend.ts" }),
             }),
           },
+          vars: { BACKEND_URL: producer.outputs.endpoint.value },
         }));
-        return {};
+        return { url: deployed.outputs.endpoint };
       },
     });
     const digest = `sha256:${"ab".repeat(32)}` as const;
     const derived = {
+      producerEndpoint: producer.outputs.endpoint,
       workerEntry: { source: "artifact", kind: "cloudflare-worker", path: "workers/frontend.ts" },
     } as const;
 
     expect(createBundle(component, [], derived).component.inputs).toEqual({
+      producerEndpoint: { component: "producer", output: "endpoint", optional: false },
       workerEntry: { source: "config", schema: { kind: "artifact" } },
     });
-    expect(new FakeHost(component, [], derived).available("workerEntry", digest).run())
-      .toMatchObject({
-        reads: ["workerEntry"],
-        resources: [{ body: { source: { entry: { kind: "cloudflare-worker", digest } } } }],
-      });
+    expect(new FakeHost(component, [], derived)
+      .available("producerEndpoint", "https://api.example")
+      .available("workerEntry", digest)
+      .run()).toMatchObject({
+      status: "complete",
+      reads: ["producerEndpoint", "workerEntry"],
+      observedOutputs: { url: { resource: "test/workload@1/worker", output: "endpoint" } },
+      resources: [{
+        body: {
+          source: { entry: { kind: "cloudflare-worker", digest } },
+          vars: { BACKEND_URL: "https://api.example" },
+        },
+      }],
+    });
   });
 });
 
