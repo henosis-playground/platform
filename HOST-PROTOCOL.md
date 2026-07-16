@@ -47,6 +47,23 @@ the wrapper around `default.value` distinguishes a missing default from a JSON `
 `component.outputs` maps output names to `{ availability, optional, schema }`. The host uses this
 metadata to validate graph wiring and literal bindings before execution.
 
+The bundler also stamps `component.revision` with the SHA-256 of the resolved component entry and
+carries one `component.compiledDependencies` record per imported producer:
+
+```ts
+interface CompiledDependencyWire {
+  component: string;
+  revision: string;
+  outputs: Record<string, OutputMetadataWire>;
+  consumedOutputs: string[];
+}
+```
+
+`outputs` is the producer's full output schema from the actual resolved module; `consumedOutputs` is
+the sorted subset referenced anywhere in the consumer's bundled module graph. These facts are part of
+the content-addressed bundle identity. They come from resolved modules and output handles, never from
+a package-manager lockfile.
+
 `component.files` lists configuration content in the evaluation closure as
 `{ path, sha256 }`. The bundler computes every digest, copies the exact bytes beside the bundle, and
 includes the sorted file manifest in bundle identity; an optional author digest is only a cross-check.
@@ -281,7 +298,10 @@ Before evaluation, Rust must verify:
 
 1. protocol version and export shape;
 2. unique, valid component/input/output names;
-3. every output input source exists and schema types unify;
+3. every output input has bundle-carried compiled dependency facts, its source exists, and every
+   consumed output unifies with the pinned producer declaration; v1 unification is exact schema and
+   exact required/optional status (safe widening is future work), while static vs observed availability
+   is not part of the consumer value type;
 4. every config input has a graph binding or declared default, and every selected literal satisfies
    its config schema;
 5. graph bindings name config inputs only, with all binding diagnostics aggregated;
